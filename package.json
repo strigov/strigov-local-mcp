@@ -1,0 +1,19 @@
+{
+  "name": "strigov-local-files-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only MCP server for two explicitly allowed local document roots.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "check": "node --check src/filesystem.js && node --check src/server.js && node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "3.25.76"
+  }
+}
