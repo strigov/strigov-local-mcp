@@ -1,0 +1,31 @@
+name: Native app
+on:
+  workflow_dispatch:
+  push:
+    paths: ['native/**', 'Cargo.*', 'test/native.test.mjs', '.github/workflows/native.yml']
+  pull_request:
+    paths: ['native/**', 'Cargo.*', 'test/native.test.mjs', '.github/workflows/native.yml']
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: npm ci --ignore-scripts
+      - name: Native MCP integration
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then export NATIVE_BINARY=target/release/local-files.exe; fi
+          node --test test/native.test.mjs
