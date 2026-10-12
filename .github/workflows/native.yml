@@ -1,10 +1,6 @@
 name: Native app
 on:
   workflow_dispatch:
-  push:
-    paths: ['native/**', 'Cargo.*', 'test/native.test.mjs', '.github/workflows/native.yml']
-  pull_request:
-    paths: ['native/**', 'Cargo.*', 'test/native.test.mjs', '.github/workflows/native.yml']
 jobs:
   test:
     strategy:

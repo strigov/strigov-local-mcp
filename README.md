@@ -77,6 +77,6 @@ npm run check
 
 Сервер без GUI: `cargo build --release --locked --no-default-features --bin local-files`. Для изолированной проверки предусмотрен абсолютный `LOCAL_FILES_DATA_DIR` или `--config /absolute/path/folders.json`.
 
-Windows-исходники содержат системное хранилище ключа и управление задачей запуска; готовность Windows требует отдельной сборки и проверки на Windows. CI-матрица добавлена, удалённый CI не запускался. Старые `install-native.py` и `install-native-windows.ps1` оставлены для истории 2.0 и отказываются устанавливать 2.1.
+Windows-исходники содержат системное хранилище ключа и управление задачей запуска; готовность Windows требует отдельной сборки и проверки на Windows. В CI версии 2.1.1 проверки macOS прошли, Windows остановился на Clippy. Автоматические запуски CI при push и pull request отключены; в workflow оставлен только ручной запуск. Старые `install-native.py` и `install-native-windows.ps1` оставлены для истории 2.0 и отказываются устанавливать 2.1.
 
 [Инструкция внутри дистрибутива](docs/distribution-readme.txt). Исторические проверки: [значок и прозвища](docs/tray-nicknames-verification-2026-10-12.md), [исходные замеры Rust](docs/native-verification.md). Исходная Node/Docker-версия сохранена; её инструкции — в [docs/legacy-node.md](docs/legacy-node.md).
