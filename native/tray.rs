@@ -368,12 +368,14 @@ pub fn run(path: PathBuf) -> Result<()> {
         Err(e) => return Err(anyhow::anyhow!("Cannot lock tray instance: {e}")),
     }
     // Hold the file lock for the entire event loop, including the diverging run call.
-    let mut events = EventLoopBuilder::<UiEvent>::with_user_event().build();
+    let events = EventLoopBuilder::<UiEvent>::with_user_event().build();
     #[cfg(target_os = "macos")]
-    {
+    let events = {
         use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        let mut events = events;
         events.set_activation_policy(ActivationPolicy::Accessory);
-    }
+        events
+    };
     let proxy = events.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = proxy.send_event(UiEvent::Menu(event));
