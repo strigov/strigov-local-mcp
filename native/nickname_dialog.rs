@@ -207,7 +207,9 @@ mod windows {
             words.push(0);
         }
         let aligned: Vec<u32> = words
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|w| w[0] as u32 | ((w[1] as u32) << 16))
             .collect();
         let mut state = State {

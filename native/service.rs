@@ -4,11 +4,9 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+use std::{fs, path::Path, process::Stdio};
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
