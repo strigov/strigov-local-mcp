@@ -1,0 +1,74 @@
+{
+  "version": "0.0.16",
+  "release": "https://github.com/openai/tunnel-client/releases/tag/v0.0.16",
+  "platforms": {
+    "darwin-arm64": [
+      {
+        "name": "tunnel-client-runtime-v0.0.16-darwin-arm64-licenses.txt",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-darwin-arm64-licenses.txt",
+        "sha256": "5acdab335f96235bb6f04d06e6327648a3ea7ba431d50772bca674f8e5a948e2"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-darwin-arm64.spdx.json",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-darwin-arm64.spdx.json",
+        "sha256": "69224147e941b1057d8b26c1a69058c4e703b5e213cce6f5f1e2b8743a8ecb7d"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-darwin-arm64.zip",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-darwin-arm64.zip",
+        "sha256": "81d230a289ae1b1416738d8150bc879d88a29e8749bb659047a7ef90dfc4acbe"
+      }
+    ],
+    "darwin-amd64": [
+      {
+        "name": "tunnel-client-runtime-v0.0.16-darwin-amd64-licenses.txt",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-darwin-amd64-licenses.txt",
+        "sha256": "700f2bce126d969f917e1330c8d3a4f3f9d384ac40c021c75409ca4325676a78"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-darwin-amd64.spdx.json",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-darwin-amd64.spdx.json",
+        "sha256": "e2bf2d85d5367f1d015ed6f929fbe545e274881ddadf6f10cb7739ecc12768a3"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-darwin-amd64.zip",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-darwin-amd64.zip",
+        "sha256": "bfd4a63a523ef9e585bbc71d1c008d099fb7560fc419d3dbb24db6f88d3c94ee"
+      }
+    ],
+    "windows-amd64": [
+      {
+        "name": "tunnel-client-runtime-v0.0.16-windows-amd64-licenses.txt",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-windows-amd64-licenses.txt",
+        "sha256": "65f2c97d95abfe805ce18fd63757186295e1bbf8e20ecedcb7cc173d3cade73f"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-windows-amd64.spdx.json",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-windows-amd64.spdx.json",
+        "sha256": "cc6a5efb3943467270685033e10e9cdaa3b9561633fbe962da6f7823200e7e4c"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-windows-amd64.zip",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-windows-amd64.zip",
+        "sha256": "639fdfe10d91c672d8f8a49386ebf39acaac4e560a88134735b1739a02ddb82d"
+      }
+    ],
+    "windows-arm64": [
+      {
+        "name": "tunnel-client-runtime-v0.0.16-windows-arm64-licenses.txt",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-windows-arm64-licenses.txt",
+        "sha256": "a757b55503d44fdce8a31779680c1c1a10985716999140a068467d1308d6aa00"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-windows-arm64.spdx.json",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-windows-arm64.spdx.json",
+        "sha256": "a719d5bce9c506b5501d5e7cb848ad87174417c66dfe52a8cac4eaa45aebd62b"
+      },
+      {
+        "name": "tunnel-client-runtime-v0.0.16-windows-arm64.zip",
+        "url": "https://github.com/openai/tunnel-client/releases/download/v0.0.16/tunnel-client-runtime-v0.0.16-windows-arm64.zip",
+        "sha256": "6117378b0a5c953cafb9ceb4ff33125a1c20dfdf09ddfefa33b1021c5dcdcb47"
+      }
+    ]
+  }
+}

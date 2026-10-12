@@ -1,4 +1,7 @@
 node_modules/
+target/
+dist/
+artifacts/
 .DS_Store
 *.log
 .env
