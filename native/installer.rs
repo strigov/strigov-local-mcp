@@ -1,11 +1,16 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#[cfg(target_os = "windows")]
+mod installer_windows;
+#[cfg(not(target_os = "windows"))]
 use anyhow::{Context, Result};
+#[cfg(not(target_os = "windows"))]
 use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
+#[cfg(not(target_os = "windows"))]
 fn payload() -> Result<PathBuf> {
     let executable = std::env::current_exe()?;
     Ok(executable
@@ -13,6 +18,7 @@ fn payload() -> Result<PathBuf> {
         .context("Missing executable directory")?
         .join("../Resources/Strigov Local MCP.app"))
 }
+#[cfg(not(target_os = "windows"))]
 fn verify(app: &Path) -> Result<()> {
     anyhow::ensure!(
         app.join("Contents/MacOS/local-files").is_file()
@@ -26,6 +32,7 @@ fn verify(app: &Path) -> Result<()> {
     anyhow::ensure!(result.status.success(), "Нарушена целостность приложения");
     Ok(())
 }
+#[cfg(not(target_os = "windows"))]
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
@@ -144,6 +151,7 @@ fn launch(app: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn install(source: &Path, destination: &Path, _launch_after: bool) -> Result<()> {
     verify(source)?;
     anyhow::ensure!(
@@ -227,6 +235,7 @@ fn install(source: &Path, destination: &Path, _launch_after: bool) -> Result<()>
     Ok(())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn run() -> Result<()> {
     anyhow::ensure!(cfg!(target_os = "macos"), "This installer is for macOS");
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -261,7 +270,11 @@ fn run() -> Result<()> {
     Ok(())
 }
 fn main() {
-    if let Err(error) = run() {
+    #[cfg(target_os = "windows")]
+    let result = installer_windows::run();
+    #[cfg(not(target_os = "windows"))]
+    let result = run();
+    if let Err(error) = result {
         if std::env::args().len() > 1 {
             eprintln!("{error:#}");
         } else {

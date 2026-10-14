@@ -60,21 +60,26 @@ Remove-Item Env:NATIVE_BINARY
 Эти проверки не подтверждают работу трея, Credential Manager, автозапуска
 и реального подключения к ChatGPT. Для них нужна проверка на Windows-машине.
 
-## Установщик и оставшаяся проверка
+## Установщик
 
-`native/installer.rs` и `scripts/build-installer.sh` пока предназначены для macOS.
-Сборка `local-files-installer.exe` не создаёт рабочий Windows-установщик.
+Windows-ветка `native/installer.rs` (`native/installer_windows.rs`) и сборка ZIP:
+
+```powershell
+pwsh -NoProfile -File scripts/build-installer-windows.ps1
+python -B -m unittest discover -s test -p test_windows_packaging.py
+python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.1.2-windows-x64.zip --output-root artifacts/windows-checks
+```
+
+Результаты нативной проверки 13 октября 2026, ручного CI и установщика —
+в [windows-verification-2026-10-13.md](windows-verification-2026-10-13.md).
 Исторический `scripts/install-native-windows.ps1` рассчитан на версию 2.0.0
 и не подходит для текущего приложения.
 
-Для Windows-дистрибутива ещё нужно подготовить установщик с приложением,
-закреплённым `tunnel-client.exe` и лицензиями, без пользовательских настроек
-и ключей. После этого проверить:
+Остаётся проверить вручную в интерактивной сессии:
 
-1. Чистую установку под обычной учётной записью и первый запуск без общих папок.
-2. Трей, выбор папок и их прозвищ, включая пути с пробелами и кириллицей.
-3. Сохранение ключа в Credential Manager и подключение своего туннеля к ChatGPT.
-4. Остановку, повторный запуск, восстановление после потери сети и входа в Windows.
-5. Обновление с сохранением папок, прозвищ, ключа и туннеля.
+1. Трей, выбор папок и их прозвищ, включая пути с пробелами и кириллицей.
+2. Сохранение ключа в Credential Manager и подключение своего туннеля к ChatGPT.
+3. Остановку, повторный запуск, восстановление после потери сети и входа в Windows.
+4. Обновление с сохранением папок, прозвищ, ключа и туннеля на реальной установке.
 
-Готовый Windows-установщик пока не опубликован.
+Windows-установщик не подписан и не опубликован.

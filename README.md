@@ -2,7 +2,7 @@
 
 Приложение в строке меню macOS: выбранные папки доступны ChatGPT только для чтения через OpenAI Secure MCP Tunnel. Нативные меню и диалоги, без Docker, Node.js и WebView. Туннельный клиент входит в дистрибутив.
 
-## Установка 2.1.1
+## Установка
 
 Собранный установщик: `dist/Strigov-Local-MCP-2.1.1-macos-arm64.dmg` — macOS 13+, Apple Silicon. Откройте образ и запустите **Install Strigov Local MCP.app**. Он установит приложение в `~/Applications`, добавит запуск при входе и запустит значок в строке меню. При обновлении настройки сохраняются, старое приложение копируется рядом в папку `Strigov Local MCP backup …`.
 
@@ -10,7 +10,9 @@
 
 При обновлении общего дистрибутива 2.1.0 прежний `Local Files.app` переносится в резервную копию и заменяется на `Strigov Local MCP.app`. Каталог настроек и системные идентификаторы сохранены для совместимости; повторно вводить ключ и выбирать папки из-за переименования не требуется.
 
-Текущий DMG подписан ad-hoc, без Developer ID и нотариализации Apple. Это проверочная сборка; для обычного публичного скачивания нужно подписать и нотариализовать релиз сертификатом издателя. Проверены установка и обновление в изолированном каталоге на текущем Mac. Intel-сборка и Windows-установщик пока не проверены и не выпущены.
+Текущий DMG подписан ad-hoc, без Developer ID и нотариализации Apple. Это проверочная сборка; для обычного публичного скачивания нужно подписать и нотариализовать релиз сертификатом издателя. Проверены установка и обновление в изолированном каталоге на текущем Mac. Intel-сборка пока не проверена и не выпущена.
+
+**Windows 10/11 x64:** `dist/Strigov-Local-MCP-2.1.2-windows-x64.zip` (рядом `.sha256`). Распакуйте весь архив и запустите `local-files-installer.exe`. Он установит приложение в `%LOCALAPPDATA%\Programs\Strigov Local MCP` без прав администратора и запустит значок в области уведомлений. Настройки хранятся в `%LOCALAPPDATA%\Local Files`, ключ — в Windows Credential Manager. Установщик проверяет SHA-256 всех файлов по `install-manifest.json`, при обновлении переносит старую версию в `Strigov Local MCP backup …` и отказывает, если приложение запущено или папка установки чужая. Сборка не подписана сертификатом издателя: SmartScreen может показать предупреждение. Подробности — [проверка Windows 13.10.2026](docs/windows-verification-2026-10-13.md).
 
 ## Первый запуск и другой аккаунт ChatGPT
 
@@ -77,6 +79,13 @@ npm run check
 
 Сервер без GUI: `cargo build --release --locked --no-default-features --bin local-files`. Для изолированной проверки предусмотрен абсолютный `LOCAL_FILES_DATA_DIR` или `--config /absolute/path/folders.json`.
 
-Windows-исходники содержат системное хранилище ключа и управление задачей запуска; готовность Windows требует отдельной сборки и проверки на Windows. В CI версии 2.1.1 проверки macOS прошли, Windows остановился на Clippy; три замечания исправлены в исходниках после релиза. [Инструкция по проверке Windows](docs/windows-validation.md) описывает исправления, команды и оставшуюся проверку перед выпуском установщика. Автоматические запуски CI при push и pull request отключены; в workflow оставлен только ручной запуск. Старые `install-native.py` и `install-native-windows.ps1` оставлены для истории 2.0 и отказываются устанавливать 2.1.
+Windows-дистрибутив собирается на Windows x64 (Rust MSVC, Python 3, Node.js 22 для тестов):
+
+```powershell
+pwsh -NoProfile -File scripts/build-installer-windows.ps1
+python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.1.2-windows-x64.zip --output-root artifacts/windows-checks
+```
+
+Проверка ставит приложение из ZIP только в изолированные каталоги, проверяет обновление, отказы и MCP через установленный worker; для MCP-тестов нужно право на symlink (режим разработчика). [Инструкция по проверке Windows](docs/windows-validation.md). Автоматические запуски CI при push и pull request отключены; в workflow оставлен только ручной запуск. Старые `install-native.py` и `install-native-windows.ps1` оставлены для истории 2.0 и отказываются устанавливать 2.1.
 
 [Инструкция внутри дистрибутива](docs/distribution-readme.txt). Исторические проверки: [значок и прозвища](docs/tray-nicknames-verification-2026-10-12.md), [исходные замеры Rust](docs/native-verification.md). Исходная Node/Docker-версия сохранена; её инструкции — в [docs/legacy-node.md](docs/legacy-node.md).
