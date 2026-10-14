@@ -5,7 +5,7 @@ plan_base: cd27662ce918c24e91d03460533dff8851c6633b
 request_sha256: d5e405eabe37613c1f7d67b3459dd2dadf0a007a5a2f5fecf6ee0b5a44188fd5
 slug: windows-ci-installer
 created: 2026-10-13
-status: planned
+status: done
 contracts: ["C1","C2","C3"]
 verify:
   - {"id":"diff-whitespace","command":"git diff --check; exit $LASTEXITCODE","checkpoint":"directed","timeout_seconds":60,"cancel_grace_seconds":5,"no_progress_seconds":60,"resource_key":null,"progress_file":null,"inputs":[],"environment":["PATH",{"tool":"git","version_args":["--version"]}],"hermetic":false,"independent_replay":false}
@@ -13,9 +13,10 @@ verify:
   - {"id":"windows-distribution","command":"python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.1.1-windows-x64.zip --output-root .superpowers/sdd/windows-ci-installer/distribution-checks; exit $LASTEXITCODE","checkpoint":"final","timeout_seconds":900,"cancel_grace_seconds":5,"no_progress_seconds":60,"resource_key":"windows-release","progress_file":null,"inputs":["dist/Strigov-Local-MCP-2.1.1-windows-x64.zip","dist/Strigov-Local-MCP-2.1.1-windows-x64.zip.sha256","node_modules"],"environment":["PATH","CARGO_HOME","RUSTUP_HOME","RUSTUP_TOOLCHAIN","RUSTFLAGS","CARGO_TARGET_DIR","INCLUDE","LIB","LIBPATH","WindowsSdkDir","VCToolsInstallDir","TEMP","TMP",{"tool":"cargo","version_args":["--version"]},{"tool":"rustc","version_args":["-vV"]},"SystemRoot","NATIVE_BINARY","NATIVE_WORKER",{"tool":"node","version_args":["--version"]},{"tool":"python","version_args":["--version"]}],"hermetic":false,"independent_replay":true}
 phases:
   - id: F1
+    base: 4882d5b20a7632f648b205648b1f999514d5fa2f
     title: Нативная проверка Windows и ручной CI
     scope: native-windows-validation
-    status: pending
+    status: done
     risk: REGRESSION
     consumes: []
     produces: ["C1","C2"]
@@ -28,7 +29,7 @@ phases:
   - id: F2
     title: Windows-установщик и проверка финального дистрибутива
     scope: windows-installer
-    status: pending
+    status: done
     risk: DATA_LOSS
     consumes: ["C1","C2"]
     produces: ["C3"]

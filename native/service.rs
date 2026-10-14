@@ -263,15 +263,21 @@ pub fn control(action: &str, folders: &Path) -> Result<()> {
         "Сначала настройте подключение к ChatGPT"
     );
     connection::tunnel_binary()?;
-    let command = format!(
-        "{} background --config {}",
-        connection::command_word(&std::env::current_exe()?),
-        connection::command_word(folders)
-    );
+    // `/SC ONLOGON` means "any user" and needs administrator rights; a logon
+    // trigger bound to the current user can be registered from XML without them.
+    let dir = tempfile::tempdir()?;
+    let xml = dir.path().join("task.xml");
+    fs::write(
+        &xml,
+        logon_task_xml(&std::env::current_exe()?, folders)
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    )?;
     checked(
-        Command::new("schtasks").args([
-            "/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED", "/TN", task, "/TR", &command,
-        ]),
+        Command::new("schtasks")
+            .args(["/Create", "/F", "/TN", task, "/XML"])
+            .arg(&xml),
         "Настроить автозапуск туннеля",
     )?;
     checked(
@@ -279,6 +285,35 @@ pub fn control(action: &str, folders: &Path) -> Result<()> {
         "Запустить туннель",
     )
 }
+#[cfg(target_os = "windows")]
+fn logon_task_xml(exe: &Path, folders: &Path) -> String {
+    fn escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+    let user = escape(
+        &match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
+            (Ok(domain), Ok(name)) => format!("{domain}\\{name}"),
+            (_, name) => name.unwrap_or_default(),
+        },
+    );
+    format!(
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-16\"?>
+<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Principals><Principal id=\"Author\"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
+  <Actions Context=\"Author\"><Exec><Command>{}</Command><Arguments>background --config {}</Arguments></Exec></Actions>
+</Task>
+",
+        escape(&connection::command_word(exe)),
+        escape(&connection::command_word(folders))
+    )
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn control(_action: &str, _folders: &Path) -> Result<()> {
     anyhow::bail!("Service controls require macOS or Windows")
@@ -286,12 +321,44 @@ pub fn control(_action: &str, _folders: &Path) -> Result<()> {
 
 fn checked(command: &mut Command, action: &str) -> Result<()> {
     let output = command.output()?;
+    let message = if output.stderr.trim_ascii().is_empty() {
+        &output.stdout
+    } else {
+        &output.stderr
+    };
     anyhow::ensure!(
         output.status.success(),
         "{action}: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
+        console_text(message).trim()
     );
     Ok(())
+}
+
+/// Windows console tools (schtasks, taskkill) write in the OEM code page, e.g. CP866.
+#[cfg(all(target_os = "windows", feature = "desktop"))]
+fn console_text(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
+    let Ok(size) = i32::try_from(bytes.len()) else {
+        return String::from_utf8_lossy(bytes).into_owned();
+    };
+    if size == 0 {
+        return String::new();
+    }
+    // SAFETY: the input slice is valid for `size` bytes; a null output asks for the length.
+    let len =
+        unsafe { MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), size, std::ptr::null_mut(), 0) };
+    if len <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; len as usize];
+    // SAFETY: `wide` holds exactly the `len` UTF-16 units reported above.
+    let written =
+        unsafe { MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), size, wide.as_mut_ptr(), len) };
+    String::from_utf16_lossy(&wide[..written.max(0) as usize])
+}
+#[cfg(not(all(target_os = "windows", feature = "desktop")))]
+fn console_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 pub fn background(folders: &Path) -> Result<()> {
@@ -343,6 +410,25 @@ pub fn background(folders: &Path) -> Result<()> {
     {
         use std::os::unix::process::CommandExt;
         Err(command.exec().into())
+    }
+    #[cfg(windows)]
+    {
+        // local-files.exe is a GUI-subsystem app, so a console child would get
+        // its own visible window; keep tunnel-client hidden and log to files.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let logs = connection::path(folders, "logs")?;
+        fs::create_dir_all(&logs)?;
+        let log = |name: &str| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(logs.join(name))
+        };
+        command
+            .stdout(log("tunnel.stdout.log")?)
+            .stderr(log("tunnel.stderr.log")?)
+            .creation_flags(CREATE_NO_WINDOW);
     }
     #[cfg(not(unix))]
     {
@@ -439,5 +525,46 @@ mod tests {
             ),
             1234.0
         );
+    }
+
+    // Registers a throwaway task exactly as `control` does, without administrator rights.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn logon_task_registers_for_current_user() -> Result<()> {
+        let dir = tempfile::Builder::new()
+            .prefix("Strigov Local MCP QA's & co ")
+            .tempdir()?;
+        let xml = dir.path().join("task.xml");
+        fs::write(
+            &xml,
+            logon_task_xml(Path::new(r"C:\Windows\System32\cmd.exe"), dir.path())
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        )?;
+        let task = format!("Local Files Tunnel QA {}", std::process::id());
+        let created = checked(
+            Command::new("schtasks")
+                .args(["/Create", "/F", "/TN", &task, "/XML"])
+                .arg(&xml),
+            "create",
+        );
+        let _ = Command::new("schtasks")
+            .args(["/Delete", "/F", "/TN", &task])
+            .output();
+        created
+    }
+
+    #[cfg(all(target_os = "windows", feature = "desktop"))]
+    #[test]
+    fn console_errors_are_decoded_from_oem_code_page() {
+        let error = checked(
+            Command::new("schtasks").args(["/Query", "/TN", "Local Files Tunnel QA missing"]),
+            "query",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.len() > "query: ".len());
+        assert!(!error.contains('\u{fffd}'), "{error}");
     }
 }

@@ -122,15 +122,15 @@ pub fn tunnel_binary() -> Result<PathBuf> {
     Ok(binary)
 }
 
+/// Quotes one argument for Windows command lines such as the scheduled task action.
+#[cfg(windows)]
 pub fn command_word(value: &Path) -> String {
-    #[cfg(windows)]
-    {
-        format!("\"{}\"", value.to_string_lossy())
-    }
-    #[cfg(not(windows))]
-    {
-        format!("'{}'", value.to_string_lossy().replace('\'', "'\"'\"'"))
-    }
+    format!("\"{}\"", value.to_string_lossy())
+}
+/// tunnel-client splits mcp.commands with POSIX shell rules on every platform,
+/// so Windows backslashes must be protected by single quotes as well.
+fn shell_word(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', "'\"'\"'"))
 }
 pub fn profile(connection: &Connection, exe: &Path, folders: &Path) -> Result<serde_json::Value> {
     connection.validate()?;
@@ -142,16 +142,16 @@ pub fn profile(connection: &Connection, exe: &Path, folders: &Path) -> Result<se
         "admin_ui": { "open_browser": false },
         "log": { "level": "info", "format": "json" },
         "mcp": { "commands": [{"channel": "main",
-            "command": format!("{} worker --config {}", command_word(exe), command_word(folders))}] }
+            "command": format!("{} worker --config {}", shell_word(exe), shell_word(folders))}] }
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
-    #[ignore = "requires LOCAL_FILES_TEST_APP pointing to a packaged macOS app"]
+    #[ignore = "requires LOCAL_FILES_TEST_APP pointing to a packaged or installed app"]
     fn packaged_runtime_accepts_generated_profile_without_external_account() -> Result<()> {
         use std::{
             net::{TcpListener, TcpStream},
@@ -162,7 +162,15 @@ mod tests {
         impl Drop for Runtime {
             fn drop(&mut self) {
                 // Let tunnel-client terminate its MCP child before collecting it.
-                unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(self.0.id() as i32, libc::SIGTERM)
+                };
+                // Windows has no SIGTERM: end exactly this process tree.
+                #[cfg(windows)]
+                let _ = Command::new("taskkill")
+                    .args(["/T", "/F", "/PID", &self.0.id().to_string()])
+                    .output();
                 let deadline = Instant::now() + Duration::from_secs(5);
                 while Instant::now() < deadline {
                     if self.0.try_wait().ok().flatten().is_some() {
@@ -175,8 +183,13 @@ mod tests {
             }
         }
         let app = PathBuf::from(std::env::var("LOCAL_FILES_TEST_APP")?);
-        let exe = app.join("Contents/MacOS/local-files");
-        let runtime = app.join("Contents/Resources/tunnel-client");
+        #[cfg(target_os = "macos")]
+        let (exe, runtime) = (
+            app.join("Contents/MacOS/local-files"),
+            app.join("Contents/Resources/tunnel-client"),
+        );
+        #[cfg(windows)]
+        let (exe, runtime) = (app.join("local-files.exe"), app.join("tunnel-client.exe"));
         // Spaces and apostrophes must survive the tunnel client's command parser.
         let temp = tempfile::Builder::new()
             .prefix("Strigov Local MCP QA's ")
@@ -194,14 +207,30 @@ mod tests {
         let profile_path = temp.path().join("tunnel.json");
         atomic_write(&profile_path, &serde_json::to_vec(&value)?)?;
         let output = fs::File::create(temp.path().join("runtime.log"))?;
+        let mut command = Command::new(runtime);
+        command
+            .args(["run", "--config"])
+            .arg(profile_path)
+            .env_clear()
+            .env("CONTROL_PLANE_API_KEY", "local-test-placeholder");
+        #[cfg(unix)]
+        command
+            .env("HOME", temp.path())
+            .env("PATH", "/usr/bin:/bin");
+        #[cfg(windows)]
+        {
+            let system = std::env::var_os("SystemRoot").context("SystemRoot unavailable")?;
+            command
+                .env("SystemRoot", &system)
+                .env("PATH", PathBuf::from(&system).join("System32"))
+                .env("USERPROFILE", temp.path())
+                .env("LOCALAPPDATA", temp.path())
+                .env("APPDATA", temp.path())
+                .env("TEMP", temp.path())
+                .env("TMP", temp.path());
+        }
         let mut child = Runtime(
-            Command::new(runtime)
-                .args(["run", "--config"])
-                .arg(profile_path)
-                .env_clear()
-                .env("HOME", temp.path())
-                .env("PATH", "/usr/bin:/bin")
-                .env("CONTROL_PLANE_API_KEY", "local-test-placeholder")
+            command
                 .stdin(Stdio::null())
                 .stdout(output.try_clone()?)
                 .stderr(output)
@@ -209,7 +238,11 @@ mod tests {
         );
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
-            anyhow::ensure!(child.0.try_wait()?.is_none(), "Bundled runtime exited");
+            anyhow::ensure!(
+                child.0.try_wait()?.is_none(),
+                "Bundled runtime exited: {}",
+                fs::read_to_string(temp.path().join("runtime.log")).unwrap_or_default()
+            );
             let health = crate::service::health(&folders);
             if health.live && health.ready {
                 anyhow::ensure!(

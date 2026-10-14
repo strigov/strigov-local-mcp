@@ -95,6 +95,33 @@ mod windows {
 #[cfg(all(target_os = "windows", feature = "desktop"))]
 pub use windows::{delete, get, set};
 
+#[cfg(all(test, target_os = "windows", feature = "desktop"))]
+mod tests {
+    #[test]
+    fn credential_manager_roundtrip_uses_only_a_synthetic_record() -> anyhow::Result<()> {
+        let account = format!(
+            "test-{:x}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
+        struct Cleanup<'a>(&'a str);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = super::delete(self.0);
+            }
+        }
+        let _cleanup = Cleanup(&account);
+        assert!(super::get(&account).is_err());
+        super::set(&account, "synthetic-placeholder")?;
+        assert!(super::get(&account)? == b"synthetic-placeholder");
+        super::delete(&account)?;
+        assert!(super::get(&account).is_err());
+        Ok(())
+    }
+}
+
 #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "desktop"))))]
 pub fn get(_account: &str) -> Result<Vec<u8>> {
     anyhow::bail!("System credential storage requires macOS or the Windows desktop build")

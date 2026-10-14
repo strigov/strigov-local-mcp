@@ -1,6 +1,6 @@
 [package]
 name = "local-files"
-version = "2.1.1"
+version = "2.1.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Native tray controller and read-only MCP filesystem server"
@@ -39,7 +39,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSTextField", "NSSecureTextField", "NSView", "NSWindow"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Security_Credentials"], optional = true }
+sha2 = "0.10"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Security_Credentials", "Win32_Globalization"], optional = true }
 
 [[bin]]
 name = "local-files"
