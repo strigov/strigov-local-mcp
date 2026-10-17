@@ -172,6 +172,21 @@ fn is_text(path: &Path) -> bool {
             | "yml"
     )
 }
+fn image_mime(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
 fn mime(path: &Path) -> &'static str {
     match path
         .extension()
@@ -410,6 +425,11 @@ impl Filesystem {
             if is_binary { BINARY_LIMIT } else { TEXT_LIMIT },
             &mut buf,
         )?;
+        if binary && let Some(mime_type) = image_mime(&p) {
+            return Ok(
+                json!({"kind":"image","root":id,"path":public(id,&logical),"uri":uri(id,&logical),"mimeType":mime_type,"size":buf.len(),"data":base64::engine::general_purpose::STANDARD.encode(&buf)}),
+            );
+        }
         let text = match std::str::from_utf8(&buf) {
             Ok(s) => s,
             Err(_) if is_binary => {
