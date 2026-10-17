@@ -7,10 +7,11 @@ risk_checked: true
 phases:
   - id: Ф1
     scope: "Experiment: images as MCP image content in read_file, synthetic probe generator, manual ChatGPT check procedure (orchestrator pauses for the user's results)"
-    status: in-progress
+    status: done
+    commits: "7e9fa08.."
   - id: Ф2
     scope: "Continuation cursors, deterministic resumable traversal, streaming text, new read_document/inspect_document tools with the PDF text layer (pages, OCR-layer and suspicious-text detection)"
-    status: pending
+    status: in-progress
   - id: Ф3
     scope: "Visual access chosen by the Ф1 outcome: images (orientation, downscale, region crop, TIFF pages) and PDF page views (embedded image or single-page PDF)"
     status: pending

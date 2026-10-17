@@ -60,7 +60,7 @@ fn tools() -> Vec<Tool> {
         (
             "read_file",
             "Read file",
-            "Read UTF-8 text or a bounded binary file as an embedded MCP resource.",
+            "Read UTF-8 text; PNG/JPEG/GIF/WebP images as MCP image content; other bounded binary files as an embedded resource.",
             json!({"root":root,"path":text,"maxChars":n(200000,200000)}),
             vec!["root", "path"],
         ),
@@ -85,10 +85,33 @@ fn tools() -> Vec<Tool> {
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}
     })).expect("static tool schema")).collect()
 }
+fn summary(data: &Value) -> String {
+    let mut text = format!(
+        "{} ({}, {} bytes)",
+        data["path"].as_str().unwrap_or("file"),
+        data["mimeType"]
+            .as_str()
+            .unwrap_or("application/octet-stream"),
+        data["size"].as_u64().unwrap_or(0),
+    );
+    if let (Some(width), Some(height)) = (data["width"].as_u64(), data["height"].as_u64()) {
+        text.push_str(&format!(", {width}×{height}"));
+    }
+    if let Some(page) = data["page"].as_u64() {
+        text.push_str(&format!(", page {page}"));
+    }
+    if let Some(region) = data.get("region") {
+        text.push_str(&format!(", region {region}"));
+    }
+    text.replace('\n', "\\n").replace('\r', "\\r")
+}
 fn result(mut data: Value) -> CallToolResult {
-    if data["kind"] == "binary" {
+    if data["kind"] == "image" {
+        let image = data.as_object_mut().unwrap().remove("data").unwrap();
+        serde_json::from_value(json!({"structuredContent":data,"content":[{"type":"text","text":summary(&data)},{"type":"image","data":image,"mimeType":data["mimeType"]}]})).expect("image result")
+    } else if data["kind"] == "binary" {
         let blob = data.as_object_mut().unwrap().remove("blob").unwrap();
-        serde_json::from_value(json!({"structuredContent":data,"content":[{"type":"resource","resource":{"uri":data["uri"],"mimeType":data["mimeType"],"blob":blob}}]})).expect("binary result")
+        serde_json::from_value(json!({"structuredContent":data,"content":[{"type":"text","text":summary(&data)},{"type":"resource","resource":{"uri":data["uri"],"mimeType":data["mimeType"],"blob":blob}}]})).expect("binary result")
     } else {
         let text = data
             .get("text")
@@ -106,7 +129,7 @@ fn failure(code: &str, message: &str) -> CallToolResult {
 }
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Prefer Markdown sidecars for PDF, DOCX and scans. Check unavailableRoots and truncated before claiming a complete search."})).expect("server config")
+        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Prefer Markdown sidecars for PDF, DOCX and scans. Check unavailableRoots and truncated before claiming a complete search. PNG/JPEG/GIF/WebP images are returned as MCP image content with a text summary."})).expect("server config")
     }
     async fn list_tools(
         &self,
@@ -171,4 +194,88 @@ pub fn serve(config: PathBuf) -> anyhow::Result<()> {
             running.waiting().await?;
             anyhow::Ok(())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_result_has_summary_then_image_without_duplicate_payload() {
+        let data = json!({"kind":"image","root":"work","path":"work/probe.png",
+            "uri":"mcp://local-files/work/probe.png","mimeType":"image/png","size":3,
+            "data":"/wAB","width":900,"height":300,"page":2,
+            "region":{"x":0,"y":0,"width":1,"height":1}});
+        let output = serde_json::to_value(result(data.clone())).unwrap();
+        assert_eq!(output["content"].as_array().unwrap().len(), 2);
+        assert_eq!(output["content"][0]["type"], "text");
+        let summary = output["content"][0]["text"].as_str().unwrap();
+        for part in [
+            "work/probe.png",
+            "image/png",
+            "3 bytes",
+            "900×300",
+            "page 2",
+            "region",
+        ] {
+            assert!(summary.contains(part), "{summary}");
+        }
+        assert!(!summary.contains('\n'));
+        assert_eq!(
+            output["content"][1],
+            json!({"type":"image","data":"/wAB","mimeType":"image/png"})
+        );
+        let mut metadata = data;
+        metadata.as_object_mut().unwrap().remove("data");
+        assert_eq!(output["structuredContent"], metadata);
+    }
+
+    #[test]
+    fn binary_result_has_summary_then_resource_without_duplicate_payload() {
+        let data = json!({"kind":"binary","root":"work","path":"work/probe.pdf",
+            "uri":"mcp://local-files/work/probe.pdf","mimeType":"application/pdf","size":3,"blob":"/wAB"});
+        let output = serde_json::to_value(result(data.clone())).unwrap();
+        assert_eq!(output["content"].as_array().unwrap().len(), 2);
+        assert_eq!(output["content"][0]["type"], "text");
+        let summary = output["content"][0]["text"].as_str().unwrap();
+        for part in ["work/probe.pdf", "application/pdf", "3 bytes"] {
+            assert!(summary.contains(part), "{summary}");
+        }
+        assert_eq!(
+            output["content"][1],
+            json!({"type":"resource","resource":{
+            "uri":"mcp://local-files/work/probe.pdf","mimeType":"application/pdf","blob":"/wAB"}})
+        );
+        let mut metadata = data;
+        metadata.as_object_mut().unwrap().remove("blob");
+        assert_eq!(output["structuredContent"], metadata);
+    }
+
+    #[test]
+    fn text_and_json_results_are_unchanged() {
+        for (data, expected) in [
+            (json!({"kind":"text","text":"Привет 😀"}), "Привет 😀"),
+            (json!({"roots":[]}), r#"{"roots":[]}"#),
+        ] {
+            let output = serde_json::to_value(result(data.clone())).unwrap();
+            assert_eq!(output["structuredContent"], data);
+            assert_eq!(output["content"], json!([{"type":"text","text":expected}]));
+        }
+    }
+
+    #[test]
+    fn binary_summary_stays_on_one_line_for_unusual_logical_names() {
+        let output = serde_json::to_value(result(json!({"kind":"binary","root":"work",
+            "path":"work/line\nbreak\r.bin","uri":"mcp://local-files/work/line%0Abreak%0D.bin",
+            "mimeType":"application/octet-stream","size":3,"blob":"/wAB"})))
+        .unwrap();
+        assert_eq!(
+            output["content"][0]["text"],
+            "work/line\\nbreak\\r.bin (application/octet-stream, 3 bytes)"
+        );
+        assert_eq!(
+            output["structuredContent"]["path"],
+            "work/line\nbreak\r.bin"
+        );
+    }
 }

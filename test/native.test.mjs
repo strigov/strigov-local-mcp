@@ -68,7 +68,30 @@ test('UTF-8 search, stable fetch IDs and binary resources',async t=>{
   assert.match((await f.call('fetch',{id:results[0].id})).structuredContent.text,/Искомая/);
   await writeFile(path.join(f.work,'sample.pdf'),Buffer.from([0xff,0x00,0x01]));
   const binary=await f.call('read_file',{root:'work',path:'sample.pdf'});
-  assert.equal(binary.content[0].type,'resource');assert.equal(binary.content[0].resource.blob,'/wAB');
+  const resource=binary.content.find(c=>c.type==='resource');
+  assert.equal(resource.resource.blob,'/wAB');
+  assert.equal(binary.content[0].type,'text');assert.equal(binary.structuredContent.blob,undefined);
+});
+test('read_file returns PNG image content with a text summary and bounded passthrough',async t=>{
+  const f=await fixture(t);
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==','base64');
+  await writeFile(path.join(f.work,'pixel.png'),png);
+  const result=await f.call('read_file',{root:'work',path:'pixel.png'});
+  assert.equal(result.isError,undefined);
+  assert.equal(result.content[0].type,'text');assert.match(result.content[0].text,/work\/pixel.png.*image\/png/);
+  assert.deepEqual(result.content.find(c=>c.type==='image'),{type:'image',data:png.toString('base64'),mimeType:'image/png'});
+  assert.equal(result.structuredContent.kind,'image');assert.equal(result.structuredContent.size,png.length);
+  assert.equal(result.structuredContent.data,undefined);assert.equal(result.structuredContent.blob,undefined);
+  assert.ok(!JSON.stringify(result).includes(f.work));
+  // Passthrough is extension-based, including when the bytes happen to be valid UTF-8.
+  for(const [ext,mimeType] of [['PNG','image/png'],['jpg','image/jpeg'],['jpeg','image/jpeg'],['gif','image/gif'],['webp','image/webp']]) {
+    await writeFile(path.join(f.work,`probe.${ext}`),'GIF89a');
+    const read=await f.call('read_file',{root:'work',path:`probe.${ext}`});
+    assert.deepEqual(read.content.find(c=>c.type==='image'),{type:'image',data:Buffer.from('GIF89a').toString('base64'),mimeType});
+  }
+  await writeFile(path.join(f.work,'oversized.png'),Buffer.alloc(15*1024*1024+1));
+  assert.equal((await f.call('read_file',{root:'work',path:'oversized.png'})).structuredContent.error.code,'FILE_TOO_LARGE');
+  assert.equal((await f.call('read_text_file',{root:'work',path:'pixel.png'})).structuredContent.error.code,'NOT_TEXT');
 });
 test('config revocation applies to the same live session and invalid config fails closed',async t=>{
   const f=await fixture(t);
