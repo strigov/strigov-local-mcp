@@ -3,6 +3,7 @@ slug: legal-documents
 created: 2026-10-17
 status: in-progress
 risk_phases: { Ф1: [SECURITY], Ф2: [SECURITY], Ф3: [SECURITY], Ф4: [SECURITY], Ф5: [SECURITY] }
+risk_checked: true
 phases:
   - id: Ф1
     scope: "Experiment: images as MCP image content in read_file, synthetic probe generator, manual ChatGPT check procedure (orchestrator pauses for the user's results)"
