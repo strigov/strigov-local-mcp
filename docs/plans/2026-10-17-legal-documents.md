@@ -1,0 +1,846 @@
+---
+slug: legal-documents
+created: 2026-10-17
+status: in-progress
+risk_phases: { Ф1: [SECURITY], Ф2: [SECURITY], Ф3: [SECURITY], Ф4: [SECURITY], Ф5: [SECURITY] }
+phases:
+  - id: Ф1
+    scope: "Experiment: images as MCP image content in read_file, synthetic probe generator, manual ChatGPT check procedure (orchestrator pauses for the user's results)"
+    status: in-progress
+  - id: Ф2
+    scope: "Continuation cursors, deterministic resumable traversal, streaming text, new read_document/inspect_document tools with the PDF text layer (pages, OCR-layer and suspicious-text detection)"
+    status: pending
+  - id: Ф3
+    scope: "Visual access chosen by the Ф1 outcome: images (orientation, downscale, region crop, TIFF pages) and PDF page views (embedded image or single-page PDF)"
+    status: pending
+  - id: Ф4
+    scope: "DOCX (tables, comments, tracked changes), XLSX/XLS, EML and MSG readers with provenance"
+    status: pending
+  - id: Ф5
+    scope: "ZIP members and email attachments via '::' paths, bounded search inside documents, release 2.2.0"
+    status: pending
+---
+
+# Lawyer case folders: documents, scans and continuation
+
+## Goal
+
+ChatGPT web chat (GPT Pro) reads a lawyer's case folder through this read-only MCP connector without the user uploading anything. Today the server only understands UTF-8 text: PDFs, DOCX, spreadsheets, e-mails, archives and scans come back as an opaque base64 resource (≤ 15 MiB) or fail, and search and listing stop at fixed limits with no way to continue. Real case folders hold 330 MB / 979-page PDFs, scanned PDFs (JPEG/JBIG2/CCITT/JPX), Latin-only OCR garbage layers, DOCX with comments and tracked changes, 812 `.xls` + 113 `.xlsx`, koi8-r `.eml`, ZIPs with CP866 names and nested ZIPs, and 127 TIFFs.
+
+This plan adds in-process, pure-Rust readers for those formats. Every extracted fragment names its source (logical `root/path`, archive member, page, sheet, row, paragraph or attachment) and says whether it came from a native text layer or an OCR layer embedded by another program. It separates "how big a file may be on disk" from "how big one answer may be", adds continuation cursors so large documents and folders can be read completely, and stays light: no OCR, no index, no cache, no native libraries, and the macOS sandbox stays as it is. Nobody yet knows whether ChatGPT passes images or PDF resources from a tool result to the model. An OpenAI staff reply from April 2026 says tool images are *not* a vision input path today. So Ф1 is a small experiment, and every visual feature after it branches on what the experiment finds.
+
+## Acceptance criteria
+
+List 3–7 externally observable criteria that define "done" for the whole plan. Reviewers may block only on these criteria, stated user requirements, repo constraints, or high-materiality risks.
+
+- **AC1 — Experiment.** Ф1 ships a build in which `read_file` returns PNG/JPEG/GIF/WebP as MCP `image` content (always alongside a text block). It also ships a stdlib-only generator of synthetic probe files and a written procedure, `docs/chatgpt-content-experiment.md`. The user's recorded outcome (A/B/C plus size thresholds) decides Ф3's branch and the calibrated response limits.
+- **AC2 — Text with provenance and continuation.** Through MCP, `read_document` returns text for PDF (text layer), DOCX, XLSX, XLS, EML, MSG and plain text. Each chunk names the logical file path, and each unit names its page / sheet+row / paragraph / mail part and its `source` (`text_layer` or `ocr_layer` for PDF). A `nextCursor` chain returns the whole document with no gaps or duplicates. A cursor for a file that has changed fails with `STALE_CURSOR`.
+- **AC3 — PDF overview.** `inspect_document` on a PDF reports the page count and classifies every page as `text`, `ocr_text`, `no_text` or `empty`, with `suspicious` reasons. A Latin-only OCR layer over a scan is flagged. For a 979-page PDF this finishes within 10 s, or returns a resumable `nextCursor`.
+- **AC4 — Visual access per experiment branch.** Under branch A, images and scanned PDF pages come back as MCP `image` content with the long side ≤ 2048 px and an optional `region` crop. Under branch B they come back as single-page PDF resources. Under branch C a text-only "not viewable" explanation is returned. A whole multi-page PDF is never returned. HEIC, legacy `.doc` and other unsupported inputs return explicit `UNSUPPORTED_FORMAT` errors with a hint.
+- **AC5 — Containers.** ZIP members (including CP866 names stored without the UTF-8 flag, and a nested ZIP up to depth 3) and e-mail attachments can be listed (`list_directory`) and read through every reader, using `archive.zip::member` paths. Zip-bomb limits (size, ratio, entry count), unsafe member names and the existing blocked-name policy are enforced inside containers.
+- **AC6 — Large folders.** `list_directory`, `search_files` and `search_text` walk in deterministic sorted order and return `nextCursor`. A folder bigger than one call's limits is covered completely across calls, with no duplicates or omissions. `search_text` also matches inside PDF/DOCX/XLSX/XLS/EML/MSG within per-call byte and time budgets and reports locators. `search_text` with `path` pointing at one document returns all matches with page/locator.
+- **AC7 — Limits, safety, release.** On-disk size limits per format are decoupled from response limits (table C0) and enforced with explicit errors. On a synthetic PDF of at least 300 MiB, the text/overview path runs at peak RSS ≤ file size + 128 MiB. Every existing security test still passes, no host path appears in errors, the macOS sandbox profile is unchanged, no new files ship, and all new crates are pure Rust under MIT/Apache/BSD. Server instructions and README describe the new capabilities, and the version is 2.2.0.
+
+## Non-goals / deferred
+
+List explicit exclusions. Reviewers MUST classify requests for these as `REJECTED_BY_SCOPE` or `DEFER` unless the orchestrator authorizes scope expansion.
+
+- OCR of any kind. Searching the content of images or scans.
+- pdfium, MuPDF, tesseract, full PDF page rasterization (including `hayro`). Rendering vector-only or tiled PDF pages to pixels. These pages use the single-page PDF fallback or "not viewable".
+- JBIG2 / JPX decoding. Under branch A these pages use the PDF fallback. Adding `hayro-jbig2`/`hayro-jpeg2000` (MSRV 1.92) is a possible follow-up, not part of this plan.
+- Legacy `.doc`, `.ppt`, `.rtf` parsing (`.rtf` no longer returns raw text: read tools return `UNSUPPORTED_FORMAT` with a "save as DOCX or PDF" hint, since raw RTF escapes Cyrillic as `\'xx`), ODS/ODT, PPTX, RAR/7z/tar, HEIC/HEIF.
+- Disk cache, persistent index, background indexing, write tools, network access, changes to the macOS sandbox profile.
+- Reconstructing DOCX automatic list numbering. Paragraph indexes (`¶N`) are the locator. DOCX headers, footers, footnotes, endnotes and text boxes beyond inline order.
+- XLSX formulas, merged cells, formatting, charts and pictures. Values are read as cached by the file.
+- MSG bodies stored only as compressed RTF (reported as "body only in RTF"). Reading MSG embedded messages (`attach_method = 5`; listed, not readable). Password-protected PDF/ZIP/office files.
+- Searching inside ZIP members or e-mail attachments, and file-name search inside archives. More than one match per file in folder-wide search (single-document search returns all matches).
+- EXIF metadata reporting. Multi-page GIF/WebP animation frames beyond the first.
+- The legacy Node/Docker server in `src/*.js`.
+
+## Global Constraints
+
+List the spec's project-wide requirements — version floors, dependency limits, naming and copy rules, platform requirements — one line each, with exact values copied verbatim from the spec or user request. If the spec imposes none, write literally `None declared in the spec.`
+
+- "Pure-Rust dependencies only, buildable for macOS arm64 and Windows x64 MSVC without extra shipped files; prefer well-maintained crates with permissive licenses (MIT/Apache/BSD); no AGPL/GPL. Justify each new crate and keep the set minimal (binary-size awareness)."
+- "Must work inside the macOS sandbox as is (no fork, no file writes, no network) — everything in-process and in-memory."
+- "Memory/time bounded per call (single operation at a time, 2 blocking threads). State the budgets."
+- "Tool naming/schemas: follow existing style (camelCase params, additionalProperties:false, readOnlyHint annotations)."
+- "Server instructions text in mcp.rs and README must explain the new capabilities to the model/user."
+- "Keep host paths out of errors; logical paths only."
+- "Keep all of this intact; new readers must work on bytes already opened via the existing capability-based open path." (read-only, explicit roots via `cap_std::Dir`, manual symlink resolution, logical `root/path`, `mcp://local-files/...` URIs)
+- Confidential samples under `/Users/strigov/Documents/Claude/Projects/Work (local)` "must NEVER be copied into the repo, committed, used as automated test fixtures, or have their contents quoted in reports/logs"; automated tests use synthetic fixtures generated in-repo or by test code in temp dirs.
+- User: "Мы как бы стараемся как можно более легким держать наш MCP сервер." User: no OCR ("PDF OCR я делать не хочу"); HEIC not supported (user converts himself).
+- `Cargo.toml` `rust-version = "1.88"` and `edition = "2024"` stay unchanged.
+- Do not extend `src/*.js` (legacy, not shipped). `test/native.test.mjs` must assert the exact final tool-name list.
+- Gate commands per phase: `cargo fmt --check`; `cargo clippy --locked --all-targets -- -D warnings`; `cargo test --locked`; `cargo build --release --locked`; `npm ci --ignore-scripts`; `node --test test/native.test.mjs`.
+- Release conventions: the version lives in `Cargo.toml` (+ `Cargo.lock` package entry) and on the first line of `docs/distribution-readme-windows.txt`. The README section starting "OCR и конвертация документов в сервер не входят" must be updated to the new reality.
+
+## Files
+
+### Ф1
+- `native/filesystem.rs` (modify): `read_file` returns `kind:"image"` (base64 `data`) for `.png/.jpg/.jpeg/.gif/.webp` ≤ `BINARY_LIMIT`.
+- `native/mcp.rs` (modify): `result()` maps `image` to `[text, image]` and `binary` to `[text, resource]`. Updates the `read_file` description and server instructions. New `#[cfg(test)]` unit tests for `result()`.
+- `test/native.test.mjs` (modify): new image test. The binary test now finds the `resource` block instead of assuming `content[0]`.
+- `scripts/make-mcp-experiment.py` (create): stdlib-only generator of synthetic probe files. The answers are written outside the probe folder.
+- `test/test_mcp_experiment.py` (create): unittest for the generator.
+- `docs/chatgpt-content-experiment.md` (create): install / probe / record procedure and the results table.
+- `README.md` (modify): the `read_file` row mentions images.
+
+### Ф2
+- `Cargo.toml`, `Cargo.lock` (modify): add `lopdf`.
+- `native/main.rs` (modify): `mod cursor; mod walk; mod documents; mod pdf;`.
+- `native/cursor.rs` (create): opaque continuation tokens, request hash, file fingerprint.
+- `native/walk.rs` (create): deterministic, sorted, resumable directory traversal.
+- `native/documents.rs` (create): format detection, `Location`/`Opened`/`Source`, the `TextDocument` trait, chunking with cursors, plain-text document, `read_document`/`inspect_document`/`fetch`, panic guard.
+- `native/pdf.rs` (create): lopdf loading with the image-content filter, page text extraction (visible vs invisible), page classification, PDF `TextDocument`, inspect.
+- `native/filesystem.rs` (modify): `pub(crate)` helpers, `RootDir::open_file`, exact-capacity reads, streaming `read_text_file` (64 MiB), `list`/`search` on `walk.rs` with cursors, `get_file_info.format`, dispatch of the new tools, `read_file`/`fetch` delegation.
+- `native/mcp.rs` (modify): schemas for `read_document`, `inspect_document`, `cursor` params, descriptions, instructions.
+- `test/native.test.mjs` (modify): tool list, cursor pagination, read limits, synthetic PDF reading and inspection; the generic binary-resource fixture renamed from `sample.pdf` to `sample.bin`, with invalid-PDF `DOCUMENT_INVALID` asserted separately.
+- `README.md` (modify): tools table, limits table, the OCR/conversion section.
+
+### Ф3 (union; the branch subset is in the Ф3 section)
+- `Cargo.toml`, `Cargo.lock` (modify): add `image`, `tiff`, `fax` (branches A/B only).
+- `native/main.rs` (modify): `mod imaging; mod pdf_page;` (branches A/B), or only `mod pdf_page;` (branch C).
+- `native/imaging.rs` (create; A/B): decode with limits, EXIF orientation, region crop, downscale, encode policy, TIFF pages, image info.
+- `native/pdf_page.rs` (create): `VisualChannel`, page view (embedded image extraction / single-page PDF / not viewable), image-to-PDF wrapping (B).
+- `native/documents.rs` (modify): `read_file` view dispatch (`page`, `region`), image `inspect`, channel-dependent hints in PDF headings.
+- `native/pdf.rs` (modify): expose page image descriptors needed by `pdf_page.rs`.
+- `native/filesystem.rs` (modify): the Ф1 image passthrough is replaced by `documents` view dispatch.
+- `native/mcp.rs` (modify): `read_file` gets `page`/`region` in its schema; result summaries for page views; instructions.
+- `test/native.test.mjs` (modify): image/region/page-view/HEIC tests for the chosen branch.
+- `README.md` (modify): visual capabilities per branch.
+
+### Ф4
+- `Cargo.toml`, `Cargo.lock` (modify): add `zip`, `quick-xml`, `calamine`, `mail-parser`, `cfb`, `encoding_rs`, `codepage`.
+- `native/main.rs` (modify): `mod docx; mod sheets; mod email; mod msg;`.
+- `native/docx.rs` (create): DOCX text, tables, comments, tracked changes, CriticMarkup rendering, summary.
+- `native/sheets.rs` (create): XLSX/XLS via calamine, sheet list, row units, `sheet` selection, zip size pre-check, bounded XLSX inflation (with the shared-string count attributes stripped), the in-memory XLS CFB copy, and range-extent / expanded-text / XLS per-`FORMULA` charge pre-scan (with overlapping-substream rejection).
+- `native/email.rs` (create): the shared `Mail`/`AttachmentInfo` types, EML parsing (mail-parser), `MailDocument`.
+- `native/msg.rs` (create): Outlook MSG via `cfb` (MAPI property streams) into `Mail`.
+- `native/documents.rs` (modify): wire the four formats into `read_document`/`inspect_document`/`fetch`/`read_file`; host the shared `ZIP_ENTRY_LIMIT`/`ZIP_RATIO_LIMIT` constants (C10).
+- `native/mcp.rs` (modify): `sheet` param, descriptions, instructions.
+- `test/native.test.mjs` (modify): synthetic DOCX/XLSX/EML through MCP.
+- `README.md` (modify): supported formats.
+
+### Ф5
+- `native/main.rs` (modify): `mod archive; mod doc_search;`.
+- `native/archive.rs` (create): ZIP listing, member-name decoding/normalization, bounded member extraction, bomb guards.
+- `native/doc_search.rs` (create): matching inside `TextDocument` units (folder mode: first hit; single-document mode: all hits with cursor).
+- `native/documents.rs` (modify): `::` container chain in `open()`, container listing, attachment opening.
+- `native/email.rs`, `native/msg.rs` (modify): attachment byte extraction by index.
+- `native/filesystem.rs` (modify): `list_directory` on containers, `search_text` document integration and single-document mode, connector `search`.
+- `native/mcp.rs` (modify): descriptions/instructions (containers, document search).
+- `test/native.test.mjs` (modify): ZIP (CP866, nested, bomb), attachments, document search, folder walk across cursors.
+- `Cargo.toml`, `Cargo.lock` (modify): version `2.2.0`.
+- `docs/distribution-readme-windows.txt` (modify): first line `Strigov Local MCP 2.2.0`.
+- `scripts/verify-windows-distribution.py` (modify): the `app-version` check expects `Strigov Local MCP 2.2.0`.
+- `README.md` (modify): final capabilities, limits, OCR section, statuses.
+
+## Contracts
+
+### C0 — Limits and budgets (single source of truth; constants live in the named module)
+
+| Constant | Value | Module | Applies to / rationale |
+|---|---|---|---|
+| `OUTPUT_LIMIT` | 200 000 chars (calibrated from Ф1 probe C6) | filesystem.rs | Max text in one response, counted in Unicode scalar values as today. If Ф1 shows ChatGPT truncating earlier, lower it to the largest fully delivered marker offset rounded down to 10 000 and lower the schema `maximum`s to match. See "Calibration per outcome" below for every case. |
+| `DOC_DEFAULT_CHARS` | `min(100 000, OUTPUT_LIMIT)` chars | documents.rs | Default `maxChars` for `read_document`/`fetch`, about 25–35 text pages per call. The model may raise it to `OUTPUT_LIMIT`. Never exceeds the calibrated `OUTPUT_LIMIT`. |
+| `TEXT_READ_LIMIT` | 64 MiB | filesystem.rs | `read_text_file`, `read_file` on text, text `read_document`. Streamed line by line, so memory is bounded by one line plus the output. |
+| `TEXT_LIMIT` | 5 MiB (unchanged) | filesystem.rs | Per-file limit for plain-text `search_text`. |
+| `SCAN_LIMIT` | 128 MiB (unchanged) | filesystem.rs | Plain-text bytes scanned per `search_text` call. |
+| `DOC_SCAN_LIMIT` | 512 MiB | doc_search.rs | Source bytes of documents read per `search_text` call (Ф5). |
+| `SEARCH_DOC_FILE_LIMIT` | 64 MiB | doc_search.rs | Larger documents are skipped in folder-wide search and counted in `skippedLargeFiles`. |
+| `WALK_LIMIT` | 20 000 (unchanged) | filesystem.rs | Entries visited per call. Now resumable. |
+| `SEARCH_DEADLINE` | 10 s (unchanged value) | filesystem.rs | Wall time per search/inspect call. Each call always finishes at least one entry/unit before honoring a budget (progress guarantee). |
+| `MAX_DIR_ENTRIES` | 100 000 | walk.rs | Entries held and sorted per directory window. Larger directories are enumerated completely in successive name-ordered windows (C5), so per-call memory stays bounded. |
+| `PDF_LIMIT` | 512 MiB | pdf.rs | With the image-content filter, peak memory ≈ file + parsed non-image objects. Measured on a synthetic 326 MiB / 979-page PDF: 354 MB peak RSS filtered vs 709 MB unfiltered, load 17 ms vs 50 ms (page cache warm). Covers the 330 MB real stress file with headroom. |
+| `PDF_ENCRYPTED_LIMIT` | 256 MiB | pdf.rs | lopdf ignores the filter for encrypted files, so memory is about 2.1× the file. |
+| `PDF_STREAM_LIMIT` | 64 MiB | pdf.rs | `LoadOptions.max_decompressed_size` and every `*_with_limit` call (content, ToUnicode, forms, image streams). |
+| `IMAGE_SOURCE_LIMIT` | 128 MiB | imaging.rs | Decoders read through `Read+Seek`; the real bound is pixels. |
+| `IMAGE_DECODE_ALLOC` | 256 MiB | imaging.rs | `image::Limits.max_alloc` (≈ 85 MP RGB; an A4 600 dpi colour scan is 35 MP). Also used for raw PDF image samples. |
+| `IMAGE_MAX_SIDE` | 2048 px | imaging.rs | Output long side. OpenAI vision fits images into a 2048 box; detail is reached with `region`. |
+| `IMAGE_OUTPUT_LIMIT` | 4 MiB encoded (calibrated) | imaging.rs | A/A+pdf: `min(4 MiB, image_max, max(1 MiB, 0.75 × image_max))`. B: `PAGE_PDF_OUTPUT_LIMIT − PDF_WRAP_OVERHEAD` (below; never 0). C: not defined (no `imaging.rs`). |
+| `PAGE_PDF_OUTPUT_LIMIT` | 8 MiB (calibrated) | pdf_page.rs | A+pdf/B: `min(8 MiB, pdf_max, max(1 MiB, 0.75 × pdf_max))`. A and C: not defined (no single-page PDF output). A+pdf and B require `PAGE_PDF_OUTPUT_LIMIT ≥ PAGE_PDF_MIN_USABLE` (below). |
+| `PDF_WRAP_OVERHEAD` | 4 KiB | pdf_page.rs | B only. Upper bound on the bytes `wrap_image_as_pdf` adds around the image stream (header, catalog, pages, page, content stream, XObject dict, xref, trailer), pinned by a unit test that measures the actual wrapper at the largest dimensions. |
+| `PAGE_PDF_MIN_USABLE` | 256 KiB | pdf_page.rs | A+pdf and B. Smallest `PAGE_PDF_OUTPUT_LIMIT` for which the single-page PDF channel is enabled (B: image budget ≥ 252 KiB, enough for a downscaled JPEG page). Below it a recorded B outcome is treated as C, and a recorded A+pdf outcome is built as A (no PDF fallback). |
+| `BINARY_LIMIT` | 15 MiB (unchanged) | filesystem.rs | Other binary files through `read_file` as a resource. |
+| `DOCX_LIMIT` / `DOCX_PART_LIMIT` | 256 MiB file / 64 MiB per XML part decompressed | docx.rs | Streamed from the ZIP; embedded media is never read. |
+| `SHEET_LIMIT` / `XLSX_UNPACKED_LIMIT` | 64 MiB file / 256 MiB actual inflated total | sheets.rs | calamine loads whole sheets into memory, so XLSX parts are inflated by us through a limited reader into a bounded in-memory copy (C10); the count is of bytes actually produced, not declared sizes. The XLS `Workbook` stream (≤ `SHEET_LIMIT`) is likewise copied into an in-memory CFB that we write (C10), so calamine never reads the original container. |
+| `SHEET_CELL_LIMIT` | 4 000 000 cells | sheets.rs | Max range extent (rows × columns) calamine may allocate: per sheet for XLSX (one cached `Range`); summed over all sheets for XLS (calamine parses every sheet at open). Checked by a pre-scan before calamine allocates (C10). ≈ 128 MiB of cells. |
+| `SHEET_TEXT_LIMIT` | 64 MiB | sheets.rs | Max expanded cell-text bytes calamine may allocate: per sheet for XLSX (before `worksheet_range`), summed over all sheets for XLS (before open), where the XLS sum also includes a per-`FORMULA` charge for the formula `String` calamine builds and keeps at open: its full `rgce.len()` initial reservation, growth, and the error-message fallback (C10). XLS workbooks whose `BOUNDSHEET8` entries share or overlap substreams are rejected, so each sheet byte is charged and parsed once. calamine copies a shared string into every cell that references it, so this counts each reference, not the shared-string table. Checked by the same pre-scan (C10). Shared-string tables (XLSX `sharedStrings.xml`, XLS `SST`) are also capped at `SHEET_TEXT_LIMIT / 48` entries (≈ 1.4 M), because calamine keeps one 24-byte `String` per entry in a `Vec` that may grow to 2× by doubling. |
+| `EML_LIMIT` | 64 MiB | email.rs | mail-parser needs the whole buffer plus decoded parts (≈ 2×). |
+| `MSG_LIMIT` | 256 MiB | msg.rs | `cfb` streams; only the needed streams are read. |
+| `ZIP_ENTRY_LIMIT` | 20 000 | documents.rs (added in Ф4; reused by archive.rs in Ф5) | Entries considered per archive (XLSX pre-check in Ф4, ZIP containers in Ф5). |
+| `MEMBER_LIMIT` | 256 MiB | archive.rs | One extracted member or attachment, decompressed (also capped by the member format's own limit). |
+| `ZIP_RATIO_LIMIT` | 200 | documents.rs (added in Ф4; reused by archive.rs in Ф5) | Declared uncompressed/compressed ratio, for members > 1 MiB. |
+| `CONTAINER_DEPTH` | 3 | documents.rs | Max `::` levels. |
+| `CURSOR_MAX_LEN` | 2048 bytes | cursor.rs | Longer cursor strings are rejected. |
+
+**Calibration per outcome (C2 line; applied in Ф2 for text, Ф3 for visual).** No calibrated value may exceed what Ф1 actually delivered:
+- **Every outcome:** `text_max` is the largest fully delivered marker offset (200 000 when all five markers arrived). `OUTPUT_LIMIT = 200 000` if `text_max = 200 000`; otherwise `text_max` rounded down to a multiple of 10 000 when ≥ 10 000, else rounded down to a multiple of 1 000. A record with `text_max < 1 000` (not even MARKER-1 arrived) is not a valid outcome; the orchestrator asks the user to repeat C6 before Ф2. `DOC_DEFAULT_CHARS = min(100 000, OUTPUT_LIMIT)`. Every `maxChars` default and schema `maximum` is ≤ `OUTPUT_LIMIT`.
+- **A:** `image_max` is a number (A means `image-small.png` was delivered); `IMAGE_OUTPUT_LIMIT` per the table. `pdf_max` is ignored; there is no `PAGE_PDF_OUTPUT_LIMIT`.
+- **A+pdf:** `IMAGE_OUTPUT_LIMIT` from `image_max` and `PAGE_PDF_OUTPUT_LIMIT` from `pdf_max` (a number, since `page-scan.pdf` worked), per the table. **Minimum usable calibration:** if `page_pdf_limit(pdf_max) < PAGE_PDF_MIN_USABLE`, the single-page PDF fallback is not enabled: Ф3 builds branch A (`VISUAL_CHANNEL = Image`, no `PAGE_PDF_OUTPUT_LIMIT`), and the phase report says why.
+- **B:** `image_max` is ignored (it may be `none`). `PAGE_PDF_OUTPUT_LIMIT = page_pdf_limit(pdf_max)` per the table. **Minimum usable calibration:** if `PAGE_PDF_OUTPUT_LIMIT < PAGE_PDF_MIN_USABLE` (e.g. only the small `page-scan.pdf` was delivered), B is not selectable: Ф3 builds branch C and the phase report says why. Otherwise images reach the model only wrapped as PDFs, so `IMAGE_OUTPUT_LIMIT = branch_b_image_limit(PAGE_PDF_OUTPUT_LIMIT) = PAGE_PDF_OUTPUT_LIMIT − PDF_WRAP_OVERHEAD` (≥ 252 KiB, never 0; a const evaluation that fails to compile if called below the minimum). The final ceiling is enforced on the real output: a `wrap_image_as_pdf` result larger than `PAGE_PDF_OUTPUT_LIMIT` returns `OUTPUT_TOO_LARGE`, never a larger PDF.
+- **C:** `image_max`/`pdf_max` are ignored (may be `none`); only `OUTPUT_LIMIT` and `DOC_DEFAULT_CHARS` are calibrated; the imaging and page-PDF constants do not exist.
+
+**Per-call budget (stated):** one operation at a time (existing semaphore), at most 2 blocking threads. Peak memory ≈ max(source bytes that must be in memory: PDF ≤ 512 MiB, EML ≤ 64 MiB, a member ≤ 256 MiB, inflated XLSX parts ≤ 256 MiB plus expanded cell text ≤ `SHEET_TEXT_LIMIT` and shared-string table headers ≤ `SHEET_TEXT_LIMIT`; decode ≤ 256 MiB) + 64 MiB working set. The worst case is ≈ 600 MB, only while a ≥ 500 MiB PDF is being read. Time: search and inspect stop at 10 s with a cursor. Single-document reads are bounded by the size limits; the target is ≤ 5 s on the 330 MB file with a warm cache.
+
+### C1 — MCP result mapping (Ф1, extended in Ф3)
+
+`Filesystem::call` returns `serde_json::Value`. `mcp.rs::result(data)` maps it as follows:
+- `kind == "image"`: remove `data` (base64) from the object. The object goes to `structuredContent`; `content = [{"type":"text","text": summary(&data)}, {"type":"image","data": <base64>, "mimeType": data.mimeType}]`.
+- `kind == "binary"`: remove `blob`. `content = [{"type":"text","text": summary(&data)}, {"type":"resource","resource":{"uri": data.uri,"mimeType": data.mimeType,"blob": <base64>}}]`.
+- otherwise unchanged: the `text` field (or the JSON dump) becomes a single text block.
+- `fn summary(data: &Value) -> String` (private, mcp.rs) gives one English line with the logical path, MIME type and byte size, plus `width×height`/`page`/`region` when present. It never includes a host path.
+- Ф1 image JSON from `filesystem.rs`: `{"kind":"image","root":id,"path":"<root>/<rel>","uri":"mcp://local-files/...","mimeType":"image/png|image/jpeg|image/gif|image/webp","size":<bytes>,"data":"<base64>"}`.
+
+### C2 — Experiment outcome record (Ф1 → Ф2, Ф3)
+
+`docs/chatgpt-content-experiment.md` ends with a results table the user fills in, and a single line `Outcome: <A|B|C>; image_max=<bytes delivered or none>; pdf_max=<bytes or none>; text_max=<chars>`.
+- **A**: the model read the codeword from `image-small.png` (MCP `image` delivered).
+- **B**: not A, but the model read the codeword from `page-scan.pdf` (an embedded PDF resource is visible to the model).
+- **C**: neither (`page-text.pdf` succeeding alone still counts as C, because we extract text ourselves).
+- If A holds *and* `page-scan.pdf` also worked, record `A+pdf`. It enables the PDF fallback for undecodable pages (only when `pdf_max` passes `PAGE_PDF_MIN_USABLE`, C0).
+
+### C3 — Shared filesystem internals (Ф2; `native/filesystem.rs`)
+
+Visibility changes only, plus one new method:
+- `pub(crate) struct FsError { pub code: &'static str, pub message: String }` (exists), `pub(crate) type Result<T>`, `pub(crate) fn error(code: &'static str, message: impl Into<String>) -> FsError`, `pub(crate) fn io_error(e: std::io::Error) -> FsError`.
+- `pub(crate) fn blocked(path: &Path) -> bool`, `pub(crate) fn relative(raw: &str) -> Result<PathBuf>`, `pub(crate) fn display(path: &Path) -> String`, `pub(crate) fn public(root: &str, path: &Path) -> String`, `pub(crate) fn uri(root: &str, path: &Path) -> String`, `pub(crate) fn mime(path: &Path) -> &'static str`, `pub(crate) fn string(..)`, `pub(crate) fn number(..)`.
+- `pub(crate) struct RootDir { pub(crate) dir: Dir }` with `pub(crate) fn open(root: &Root) -> Result<Self>` and `pub(crate) fn resolve(&self, raw: &str) -> Result<PathBuf>` (unchanged logic).
+- NEW `pub(crate) fn open_file(&self, path: &Path, limit: u64) -> Result<(cap_std::fs::File, crate::cursor::Fingerprint)>`. It uses the same `O_NONBLOCK` open, checks for a regular file, returns `FILE_TOO_LARGE` if `len > limit`, and builds `Fingerprint { size, modified_ns }` from file metadata (`modified_ns = 0` if unavailable). `RootDir::read` is re-implemented on top of it and reserves `len + 1` bytes before `read_to_end`, so a large buffer never grows by doubling.
+- `pub(crate) const TEXT_READ_LIMIT: u64 = 64 * 1024 * 1024;`. The existing constants stay.
+
+### C4 — Cursor (Ф2; `native/cursor.rs`)
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Fingerprint { pub size: u64, pub modified_ns: u64 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CursorKind { Walk, Doc, Inspect, Find }
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Cursor {
+    pub v: u8,                       // = 1
+    pub k: CursorKind,
+    pub h: u64,                      // request_hash of the parameters that define the sequence
+    #[serde(default)] pub f: Option<Fingerprint>,  // Doc/Inspect/Find: on-disk file; Walk (search_text folder mode): the unfinished document `p`
+    #[serde(default)] pub p: Vec<String>,          // Walk: components of the last processed entry (or of the unfinished document when f is Some); first = root id
+    #[serde(default)] pub u: u64,                  // Doc/Inspect/Find, and Walk with f: next unit index
+    #[serde(default)] pub o: u64,                  // Doc: char offset inside unit u; Find and Walk with f: hits already returned in unit u
+}
+pub(crate) const CURSOR_MAX_LEN: usize = 2048;
+pub(crate) fn request_hash(parts: &[&str]) -> u64;   // std::hash::DefaultHasher::new(), each part + 0xFF separator
+pub(crate) fn encode(cursor: &Cursor) -> String;     // base64 URL_SAFE_NO_PAD of serde_json
+pub(crate) fn decode(raw: &str, kind: CursorKind, hash: u64) -> crate::filesystem::Result<Cursor>; // INVALID_CURSOR on length/base64/JSON/version/kind/hash mismatch
+pub(crate) fn check_fingerprint(cursor: &Cursor, current: Fingerprint) -> crate::filesystem::Result<()>; // STALE_CURSOR
+```
+Hash inputs: the tool name, canonical root id (or `all`), the normalized `path` string, and `query` (search) / `startPage`,`endPage`,`sheet` (documents). `maxChars` and `limit` are *not* hashed; they may change between calls. **Rule:** cursor contents are never used to open, resolve or build a path. Walk components are only compared with names read from disk.
+
+### C5 — Walker (Ф2; `native/walk.rs`)
+
+```rust
+pub(crate) const MAX_DIR_ENTRIES: usize = 100_000;
+pub(crate) struct WalkEntry {
+    pub real: PathBuf,              // path relative to the capability root, as read from disk
+    pub logical: PathBuf,           // logical path (same as today's `p`)
+    pub components: Vec<String>,    // relative to the walk base, `to_string_lossy` names
+    pub file_type: cap_std::fs::FileType,
+    pub depth: usize,               // 1 = direct child of base
+}
+pub(crate) enum WalkEvent { Entry(WalkEntry), Inaccessible }
+pub(crate) struct Walker<'a> { /* private */ }
+impl<'a> Walker<'a> {
+    pub(crate) fn new(root: &'a crate::filesystem::RootDir, base_real: PathBuf, base_logical: PathBuf,
+                      max_depth: usize, resume_after: Option<Vec<String>>, include_resume_entry: bool) -> Self;
+}
+impl Iterator for Walker<'_> { type Item = WalkEvent; }
+```
+Order is pre-order: each directory's children are sorted by `file_name().to_string_lossy()` bytes, and a directory's descendants follow it immediately. This order is lexicographic on `components`. Blocked names are never yielded. Symlinks are yielded with their type but never followed or descended. With `resume_after = Some(c)`, every entry with `components <= c` is skipped (`components < c` when `include_resume_entry` is true, so the entry equal to `c`, if it is still on disk, is yielded again; used only by the Ф5 folder search to resume an unfinished document). A directory whose `components` are `< c` and not a prefix of `c` is skipped without being read. Directories are read lazily, one sorted frame per level.
+- **Windowed directory frames (bounded memory, complete coverage).** A frame never holds more than `MAX_DIR_ENTRIES` names. Reading a directory streams `read_dir` once and keeps only the `MAX_DIR_ENTRIES` smallest names strictly greater than the frame's lower bound (a bounded max-heap by name), plus a flag saying whether more qualifying names existed. The first window's lower bound is "none", or, when resuming, names `< c[level]` are excluded (`c[level]` itself is kept only to descend into it or, with `include_resume_entry`, to yield it). When a window is exhausted and the flag is set, the directory is read again with the lower bound = the last name of that window, producing the next window. Because the cursor's `p` already carries the last emitted name at every level, a resumed call rebuilds the right window the same way. Re-reads cost one extra `read_dir` per window; no index or cache is kept.
+
+### C6 — Documents core (Ф2; `native/documents.rs`)
+
+```rust
+pub(crate) const DOC_DEFAULT_CHARS: usize = /* min(100_000, OUTPUT_LIMIT), per C0 calibration */;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageFormat { Png, Jpeg, Gif, Webp, Tiff, Bmp }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Format { Text, Pdf, Docx, Xlsx, Xls, Eml, Msg, Zip, Image(ImageFormat), Heic, LegacyOffice, Other }
+pub(crate) fn format_of(name: &str) -> Format;   // lowercase extension of the last component:
+//  is_text() list (minus "eml") → Text; pdf; docx|docm → Docx; xlsx|xlsm → Xlsx; xls → Xls; eml; msg; zip;
+//  png, jpg|jpeg, gif, webp, tif|tiff, bmp → Image; heic|heif → Heic; doc|ppt|pptx|odt|ods|rtf|rar|7z → LegacyOffice; else Other
+//  ("rtf" is removed from is_text() in Ф2, so it is not Text)
+impl Format { pub(crate) fn name(self) -> &'static str; pub(crate) fn has_text_reader(self) -> bool; }
+
+pub(crate) struct Location { pub root: String, pub disk: PathBuf, pub members: Vec<String> }
+impl Location {
+    pub(crate) fn display(&self) -> String; // "work/Дело/a.zip::Папка/b.pdf"  (public() + "::"-joined members)
+    pub(crate) fn id(&self) -> String;      // "work:Дело/a.zip::Папка/b.pdf"  (root ids never contain ':')
+    pub(crate) fn uri(&self) -> String;     // uri(root, disk); members are not encoded in the URI
+}
+pub(crate) enum Source { File(std::io::BufReader<cap_std::fs::File>), Memory(std::io::Cursor<Vec<u8>>) } // impl Read + Seek
+pub(crate) struct Opened { pub location: Location, pub name: String, pub format: Format, pub size: u64,
+                           pub fingerprint: crate::cursor::Fingerprint, pub source: Source }
+impl Opened { pub(crate) fn into_bytes(self, limit: u64) -> crate::filesystem::Result<Vec<u8>>; } // exact reserve; FILE_TOO_LARGE
+pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened>; // Ф2: disk only (resolve + open_file); Ф5: "::" chain
+
+pub(crate) struct Unit { pub locator: serde_json::Value, pub heading: Option<String>, pub text: String }
+pub(crate) trait TextDocument {
+    fn unit_name(&self) -> &'static str;                  // "page" | "line" | "block" | "row" | "part"
+    fn unit_count(&self) -> usize;
+    fn unit(&mut self, index: usize) -> Result<Unit>;     // lazily extracted
+    fn unit_range(&self, _args: &serde_json::Value) -> Result<std::ops::Range<usize>> { Ok(0..self.unit_count()) }
+    fn summary(&self) -> serde_json::Value;               // merged into structuredContent (pageCount, sheets, ...)
+}
+pub(crate) fn open_text_document(opened: Opened, args: &Value) -> Result<Box<dyn TextDocument>>; // per-format dispatch
+pub(crate) fn read_document(root: &RootDir, root_id: &str, args: &Value) -> Result<Value>;
+pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> Result<Value>;
+pub(crate) fn fetch(root: &RootDir, root_id: &str, raw_path: &str, id: &str) -> Result<Value>;
+fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T>; // std::panic::catch_unwind(AssertUnwindSafe) → DOCUMENT_INVALID
+```
+- **Chunking:** start at `unit_range.start`, or at cursor `(u, o)`. Append units (heading line, then text; units separated by `"\n\n"`) until `maxChars`. A unit larger than the remaining budget is cut on a char boundary and the cursor gets `o`. Each chunk starts with `[source: <display> — <unit_name>s <a>–<b> of <N>]`. `nextCursor` is present iff text remains in the range.
+- **`read_document` JSON:** `{"kind":"document","format":"pdf","root","path":<display>,"id","uri","text","units":[<locator + "chars">...],"unitName","totalUnits","truncated":bool,"nextCursor"?: string, ...summary}`. `truncated == nextCursor.is_some()`.
+- **Plain text** (`Format::Text`): read whole (≤ `TEXT_READ_LIMIT`) and UTF-8 validated, else `NOT_TEXT`. Units are lines, locator `{"line":n}`, no per-line heading.
+- **`inspect_document` JSON:** `{"kind":"inspect","format",...,"root","path","id"}` plus format fields (C7/C9/C10/C11). Text: `{size, lines}`.
+- **`fetch`:** `read_document` with `maxChars = DOC_DEFAULT_CHARS` gives `{"id","title","text","url","metadata":{"root","path","mimeType","format","truncated","nextCursor"?}}`. Errors as today for formats without a reader.
+- **New error codes:** `UNSUPPORTED_FORMAT` (message names the format plus a hint; e.g. HEIC: "convert to JPEG/PNG"; `.doc`: "save as DOCX or PDF"), `INVALID_CURSOR`, `STALE_CURSOR`, `DOCUMENT_INVALID`, `PAGE_OUT_OF_RANGE`, `PDF_ENCRYPTED`, `NOT_VIEWABLE` (Ф3), `INVALID_REGION` (Ф3), `OUTPUT_TOO_LARGE` (Ф3), `ZIP_INVALID`, `ZIP_BOMB`, `MEMBER_NOT_FOUND`, `NOT_A_CONTAINER`, `UNSAFE_MEMBER_NAME`, `ENCRYPTED_MEMBER`, `UNSUPPORTED_COMPRESSION`, `NESTING_TOO_DEEP` (Ф5). Messages are fixed strings plus logical names only; library error text is never forwarded verbatim.
+
+### C7 — PDF text layer (Ф2; `native/pdf.rs`)
+
+```rust
+pub(crate) const PDF_LIMIT: u64 = 512 * 1024 * 1024;
+pub(crate) const PDF_ENCRYPTED_LIMIT: u64 = 256 * 1024 * 1024;
+pub(crate) const PDF_STREAM_LIMIT: usize = 64 * 1024 * 1024;
+pub(crate) const SCAN_IMAGE_PIXELS: u64 = 1_000_000;
+pub(crate) const MIN_TEXT_CHARS: usize = 16;
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PageKind { Text, OcrText, NoText, Empty }    // as_str(): "text" | "ocr_text" | "no_text" | "empty"
+pub(crate) struct PageText { pub text: String, pub visible_chars: usize, pub invisible_chars: usize, pub undecodable: usize }
+pub(crate) struct PageImage { pub id: lopdf::ObjectId, pub width: u32, pub height: u32 }
+pub(crate) struct PageInfo { pub page: u32, pub kind: PageKind, pub suspicious: Option<&'static str>, pub chars: usize, pub scan_image: bool }
+pub(crate) struct PdfDocument { /* doc: lopdf::Document, pages: Vec<lopdf::ObjectId> */ }
+impl PdfDocument {
+    pub(crate) fn load(bytes: &[u8], keep_images: &std::collections::HashSet<lopdf::ObjectId>) -> Result<Self>;
+    pub(crate) fn page_count(&self) -> u32;
+    pub(crate) fn page_id(&self, page: u32) -> Result<lopdf::ObjectId>;         // PAGE_OUT_OF_RANGE
+    pub(crate) fn page_text(&self, page: u32) -> Result<PageText>;
+    pub(crate) fn page_images(&self, page: u32) -> Result<Vec<PageImage>>;      // page + inherited resources + Form XObjects ≤ depth 3
+    pub(crate) fn page_info(&self, page: u32) -> Result<(PageInfo, PageText)>;
+    pub(crate) fn metadata(&self) -> serde_json::Value;                         // title, producer, encrypted
+    pub(crate) fn document(&self) -> &lopdf::Document;
+    pub(crate) fn into_document(self) -> lopdf::Document;
+}
+pub(crate) fn assess(text: &PageText, has_images: bool, scan_image: bool) -> (PageKind, Option<&'static str>);
+pub(crate) fn page_ranges(pages: impl IntoIterator<Item = u32>) -> String;   // [1,2,3,5] → "1-3,5"
+pub(crate) struct PdfText { /* PdfDocument + range */ }                     // impl TextDocument; unit = page
+pub(crate) fn inspect(bytes: &[u8], from_page: u32, deadline: std::time::Instant) -> Result<(serde_json::Value, Option<u32>)>;
+```
+- **Loading:** first, `lopdf::Document::load_metadata_mem(bytes)`. If `.encrypted` and `bytes.len() > PDF_ENCRYPTED_LIMIT`, return `FILE_TOO_LARGE`. Then `Document::load_mem_with_options(bytes, LoadOptions { filter: Some(image_filter), max_decompressed_size: Some(PDF_STREAM_LIMIT), ..Default::default() })` (set the fields on `LoadOptions::default()`). A failure that needs a password returns `PDF_ENCRYPTED`; any other failure returns `DOCUMENT_INVALID`. `image_filter: lopdf::FilterFunc` (a plain `fn`, verified compile against lopdf 0.45.0): for `Object::Stream` whose dict `/Subtype` is `/Image` and whose id is not in a `thread_local!` keep-set, replace `content` with `vec![0]` and set dict key `LocalFilesPlaceholder = true`. A **non-empty** placeholder is required: lopdf re-reads zero-length streams from the buffer. For any stream, return `Some((id, Object::Null))` (lopdf discards the return value for top-level objects, and streams never live in object streams). For non-streams return `Some((id, object.clone()))`. `load` sets the keep-set from `keep_images` and clears it afterwards. lopdf must be compiled with `default-features = false` (no `rayon`), so the filter runs on the calling thread.
+- **Text extraction** (custom walker on public lopdf APIs: `get_page_fonts`, `Dictionary::get_font_encoding_with_limit`, `Encoding::write_to_string`, `get_page_content_with_limit`, `content::Content::decode`, `Stream::decompressed_content_with_limit`, `get_page_resources`). Operators: `BT/ET`, `Tf`, `Tr` (modes 3 and 7 count as invisible), `q/Q` (save/restore `Tr`), `Tj`, `TJ` (number < −250 → space), `'` and `"` (newline + show), `T*`, `Td/TD` (ty ≠ 0 → newline; tx > 0 with ty = 0 → space if none), `Tm` (y change > 0.5 → newline), `Do` on a Form XObject (recurse with the form's `/Resources`, falling back to the page's, depth ≤ 3). Characters that fail to decode count toward `undecodable`; so do U+FFFD and C0 controls other than `\n\t`.
+- **`assess`:** `chars` = non-whitespace characters. `chars < MIN_TEXT_CHARS` gives `NoText` if the page has images, else `Empty`. Otherwise `OcrText` if `invisible_chars * 2 >= visible_chars + invisible_chars`, else `Text`. `suspicious` takes the first matching reason: `"undecodable"` if undecodable ≥ 5 % of chars; `"mojibake"` if letters in U+00C0–U+00FF are ≥ 20 % of letters; `"no_cyrillic_over_scan"` if `scan_image` and letters ≥ 40 and Cyrillic letters (U+0400–U+04FF) = 0. `scan_image` is true when any page image has `width*height ≥ SCAN_IMAGE_PIXELS`.
+- **Unit heading:** `--- page N · text_layer ---`, `--- page N · ocr_layer (text embedded by OCR software, may contain recognition errors) ---`, `--- page N · no text layer (scanned image) ---`, `--- page N · empty ---`. If suspicious, append ` · suspicious: <reason>`. Ф3 appends the channel-dependent view hint. Locator: `{"page":N,"source":"text_layer"|"ocr_layer"}`, or `{"page":N,"kind":"no_text"|"empty"}`, plus `"suspicious":reason`.
+- **`unit_range`:** `startPage`/`endPage` (1-based, inclusive) give `PAGE_OUT_OF_RANGE` if outside `1..=page_count`.
+- **Inspect JSON:** `{"pageCount","encrypted","producer","title","pages":{"text":"1-12","ocr_text":"","no_text":"13-14","empty":""},"suspicious":{"no_cyrillic_over_scan":"20"},"classified":N,"complete":bool,"nextCursor"?}`. It stops at the deadline after at least one page and returns an `Inspect` cursor (`u` = next page index). A resumed call reports only the newly classified pages, with `"fromPage"`.
+
+### C8 — Final tool surface (11 tools; introduced phase in brackets)
+
+All tools keep `readOnlyHint:true, destructiveHint:false, idempotentHint:true, openWorldHint:false`, `additionalProperties:false`, camelCase.
+- `list_roots` — unchanged.
+- `list_directory` — `{root, path, depth(1..5), limit(1..2000), cursor[Ф2]}`. Pre-order sorted. `nextCursor`. [Ф5] `path` may name a ZIP/EML/MSG or a `::` prefix inside one.
+- `get_file_info` — unchanged input. [Ф2] adds `"format": Format::name()`.
+- `search_files` — `{root, path, query, limit(1..200), cursor[Ф2]}`.
+- `search_text` — `{root, path, query, limit(1..100), cursor[Ф2]}`. [Ф5] documents included. If `path` is a file or member, single-document mode returns all hits with `locator`.
+- `read_text_file` — unchanged schema. [Ф2] streaming, `TEXT_READ_LIMIT`.
+- `read_file` — `{root, path, maxChars, page[Ф3](1..1_000_000), region[Ф3]}`. `region = {"type":"object","properties":{"x":{"type":"number","minimum":0,"maximum":1},"y":{...same},"width":{"type":"number","exclusiveMinimum":0,"maximum":1},"height":{...same}},"required":["x","y","width","height"],"additionalProperties":false}` holds fractions of the (oriented) image or page image. Document formats that have a text reader return the `read_document` result.
+- `inspect_document` [Ф2] — `{root, path, cursor}`.
+- `read_document` [Ф2] — `{root, path, cursor, maxChars(1..OUTPUT_LIMIT, default DOC_DEFAULT_CHARS), startPage[Ф2], endPage[Ф2], sheet[Ф4] (string 1..256: sheet name or 1-based index)}`.
+- `search`, `fetch` — unchanged schemas (ChatGPT connector format). `fetch` uses C6 `fetch`.
+- `cursor` schema: `{"type":"string","minLength":1,"maxLength":2048}`.
+
+### C9 — Visual access (Ф3; `native/imaging.rs`, `native/pdf_page.rs`)
+
+```rust
+// pdf_page.rs
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum VisualChannel { Image, ImageWithPdfFallback, Pdf, None }
+pub(crate) const VISUAL_CHANNEL: VisualChannel = /* A → Image, A+pdf → ImageWithPdfFallback, B → Pdf, C → None */;
+pub(crate) const PAGE_PDF_OUTPUT_LIMIT: usize = /* calibrated per C0 */;                                          // A+pdf/B
+pub(crate) enum PageView { Image(crate::imaging::ViewImage), Pdf(Vec<u8>), NotViewable(&'static str /* reason */) } // A/A+pdf/B
+pub(crate) fn view_page(bytes: &[u8], page: u32, region: Option<crate::imaging::Region>) -> Result<PageView>;   // A/A+pdf/B
+pub(crate) fn single_page_pdf(bytes: &[u8], page: u32) -> Result<Vec<u8>>;                                         // A+pdf/B
+pub(crate) fn wrap_image_as_pdf(image: &crate::imaging::ViewImage) -> Result<Vec<u8>>;                             // B only; OUTPUT_TOO_LARGE if > PAGE_PDF_OUTPUT_LIMIT
+// pdf_page.rs, A+pdf/B: calibration (C0); A+pdf is built as A and B as C when page_pdf_limit(pdf_max) < PAGE_PDF_MIN_USABLE
+pub(crate) const PAGE_PDF_MIN_USABLE: usize = 256 * 1024;
+pub(crate) const fn page_pdf_limit(pdf_max: usize) -> usize;                       // min(8 MiB, pdf_max, max(1 MiB, pdf_max * 3 / 4))
+// pdf_page.rs, B only: calibration (C0)
+pub(crate) const PDF_WRAP_OVERHEAD: usize = 4 * 1024;
+pub(crate) const fn branch_b_image_limit(page_pdf_limit: usize) -> Option<usize>; // None if < PAGE_PDF_MIN_USABLE, else Some(page_pdf_limit − PDF_WRAP_OVERHEAD)
+// imaging.rs in B: IMAGE_OUTPUT_LIMIT = match branch_b_image_limit(PAGE_PDF_OUTPUT_LIMIT) { Some(v) => v, None => panic!("B below minimum") } (const)
+// pdf_page.rs, branch C only (no imaging.rs; nothing here references crate::imaging):
+pub(crate) enum PageView { NotViewable(&'static str /* reason */) }
+pub(crate) fn view_page(page: u32) -> PageView;   // never loads the PDF; always NotViewable("no_visual_channel"); read_file builds the not-viewable JSON from it
+// pdf.rs extension (A/A+pdf): what the page actually paints, from the same content walker as page_text
+pub(crate) struct PagePaint { pub images: Vec<lopdf::ObjectId> /* one entry per image `Do`, incl. Form XObjects ≤ depth 3 */,
+                              pub inline_images: usize /* BI…EI */, pub visible_text: bool /* any non-whitespace char shown outside Tr 3/7 */,
+                              pub vector_paint: bool /* any S s f F f* B B* b b* sh */ }
+impl PdfDocument { pub(crate) fn page_paint(&self, page: u32) -> Result<PagePaint>; }
+// imaging.rs  (A/A+pdf/B)
+pub(crate) const IMAGE_SOURCE_LIMIT: u64 = 128 * 1024 * 1024;
+pub(crate) const IMAGE_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+pub(crate) const IMAGE_MAX_SIDE: u32 = 2048;
+pub(crate) const IMAGE_OUTPUT_LIMIT: usize = /* calibrated */;
+#[derive(Clone, Copy, Debug)] pub(crate) struct Region { pub x: f64, pub y: f64, pub width: f64, pub height: f64 }
+pub(crate) fn parse_region(args: &serde_json::Value) -> Result<Option<Region>>;   // INVALID_REGION if x+width > 1 or y+height > 1 (epsilon 1e-9)
+pub(crate) struct ViewImage { pub mime: &'static str, pub data: Vec<u8>, pub width: u32, pub height: u32,
+                              pub source_width: u32, pub source_height: u32, pub page: Option<u32>, pub pages: Option<u32>,
+                              pub passthrough: bool, pub region: Option<Region> }
+pub(crate) fn view_file(source: &mut crate::documents::Source, format: crate::documents::ImageFormat,
+                        page: Option<u32>, region: Option<Region>) -> Result<ViewImage>;
+pub(crate) fn view_pixels(image: image::DynamicImage, lossless: bool, rotate_degrees: u16,
+                          region: Option<Region>) -> Result<ViewImage>;
+pub(crate) fn info(source: &mut crate::documents::Source, format: crate::documents::ImageFormat) -> Result<serde_json::Value>; // width, height, pages
+```
+- **Image JSON:** `{"kind":"image","root","path","id","uri","mimeType","data","width","height","sourceWidth","sourceHeight","page"?,"pages"?,"region"?,"passthrough","note"}`. `note` is an English hint, e.g. "Downscaled from 3509×2481; pass region {x,y,width,height} (fractions 0–1) to zoom".
+- **Page PDF JSON:** `{"kind":"binary","root","path","id","uri":"<uri>#page=N","mimeType":"application/pdf","size","page","pageCount","blob","note"}`.
+- **Not-viewable JSON** (C, or an undecodable page without a PDF fallback): `{"kind":"not_viewable","root","path","page"?,"reason","text":"<English explanation + page classification + advice to provide a text copy>"}`. This is a normal result, not an error, so the model can tell the user.
+- **Encode policy:**
+  - Passthrough of the original bytes only for PNG/JPEG with no region, EXIF orientation = none, both sides ≤ `IMAGE_MAX_SIDE` and size ≤ `IMAGE_OUTPUT_LIMIT`.
+  - Otherwise: decode with `image::ImageReader::new(..).with_guessed_format()?` and `.limits(Limits { max_alloc: Some(IMAGE_DECODE_ALLOC), ..Limits::default() })`, then `into_decoder()`, `orientation()`, `DynamicImage::from_decoder`, `apply_orientation`. Then crop (`crop_imm`, applied to oriented pixels), then `thumbnail` to fit 2048, then encode.
+  - Encoding: PNG if `lossless` (source PNG/GIF/BMP/bilevel TIFF/CCITT/1-bit) and the result fits `IMAGE_OUTPUT_LIMIT`; else JPEG quality 85 (`JpegEncoder::new_with_quality`; alpha flattened onto white), then quality 70, then halve the dimensions; at most 3 attempts, then `OUTPUT_TOO_LARGE`.
+- **TIFF:** `page` 1 via the image crate (handles 1-bit/CCITT). `page > 1` via `tiff::decoder::Decoder::{new, with_limits, seek_to_image}` + `read_image`, for color types Gray(1|8), RGB(8), RGBA(8), else `UNSUPPORTED_FORMAT`. `pages` is counted with `more_images()/next_image()`. For non-TIFF images `page > 1` returns `PAGE_OUT_OF_RANGE`.
+- **PDF page view:** two passes.
+  1. `PdfDocument::load(bytes, ∅)`, then `page_paint(page)` (C7 extension, Ф3 Step 3).
+  2. The page is extractable only when its visible content is represented by one image: exactly one painted image XObject (`page_paint.images.len() == 1`, counting each `Do` of an image, including inside Form XObjects ≤ depth 3), no inline images, no visible text (invisible `3`/`7 Tr` OCR text is allowed), and no vector painting (`vector_paint == false`). Any other painted image (a stamp, a signature) or visible text/vector content makes the page "composite"; it is never extracted partially.
+  3. `PdfDocument::load(bytes, {that image id})`, then decode by filter:
+     - single `/DCTDecode`: passthrough if possible, else decode via image.
+     - `/FlateDecode`, `/LZWDecode`, `/RunLengthDecode`, ASCII filters or none: `Stream::decompressed_content_with_limit(IMAGE_DECODE_ALLOC as usize)`, then raw samples for Gray/RGB/CMYK 8-bit, Gray 1-bit and ImageMask (honoring `/Decode [1 0]`), and Indexed 1/2/4/8-bit over a Gray/RGB base.
+     - single `/CCITTFaxDecode`: `K < 0` → `fax::decoder::decode_g4`; `K == 0` → `fax::decoder::decode_g3`; honor `Columns` (default 1728), `Rows`, `BlackIs1`; expand with `fax::decoder::pels`.
+     - `/JBIG2Decode`, `/JPXDecode`, `K > 0`, filter chains containing an image codec, a still-present placeholder, or a composite page: `ImageWithPdfFallback`/`Pdf` → `single_page_pdf`; `Image` → `NotViewable("unsupported_image_encoding")` (`NotViewable("composite_page")` for a composite page).
+  4. Rotate by the inherited page `/Rotate` (0/90/180/270), then `view_pixels`.
+- **`single_page_pdf`:**
+  - Load with the keep-set = all image ids reachable from the page (`page_images`). Copy the inherited `Resources/MediaBox/CropBox/Rotate` into the page dict.
+  - The catalog keeps only `/Type /Catalog` + `/Pages`. The root Pages node gets `Kids [page] Count 1`, and the page's `/Parent` is set to it. Remove page `/Annots`, `/B`, `/Thumb`, and trailer `/Encrypt`, `/Info`.
+  - Then `prune_objects()`. If any remaining stream still has `LocalFilesPlaceholder`, return `DOCUMENT_INVALID`.
+  - `save_to(&mut Vec)`. If the result exceeds `PAGE_PDF_OUTPUT_LIMIT`, return `OUTPUT_TOO_LARGE`.
+
+### C10 — Office and mail readers (Ф4)
+
+```rust
+// documents.rs (added in Ф4; archive.rs reuses them in Ф5)
+pub(crate) const ZIP_ENTRY_LIMIT: usize = 20_000;
+pub(crate) const ZIP_RATIO_LIMIT: u64 = 200;
+// docx.rs
+pub(crate) const DOCX_LIMIT: u64 = 256 * 1024 * 1024;
+pub(crate) const DOCX_PART_LIMIT: u64 = 64 * 1024 * 1024;
+pub(crate) struct DocxDocument { /* blocks: Vec<Unit>, summary: Value */ }   // impl TextDocument, unit_name "block"
+pub(crate) fn open(source: crate::documents::Source) -> Result<DocxDocument>;
+// sheets.rs
+pub(crate) const SHEET_LIMIT: u64 = 64 * 1024 * 1024;
+pub(crate) const XLSX_UNPACKED_LIMIT: u64 = 256 * 1024 * 1024;   // actual inflated bytes
+pub(crate) const SHEET_CELL_LIMIT: u64 = 4_000_000;              // range extent rows × columns
+pub(crate) const SHEET_TEXT_LIMIT: u64 = 64 * 1024 * 1024;       // expanded cell-text bytes (each shared-string reference counted)
+pub(crate) struct SheetDocument { /* calamine::Sheets<Source>, per-sheet row offsets, cached current Range */ } // unit_name "row"
+pub(crate) fn open(source: crate::documents::Source, format: crate::documents::Format) -> Result<SheetDocument>;
+// email.rs
+pub(crate) const EML_LIMIT: u64 = 64 * 1024 * 1024;
+pub(crate) struct AttachmentInfo { pub index: usize /* 1-based */, pub name: String, pub mime: String, pub size: u64,
+                                   pub inline: bool, pub embedded_message: bool }
+pub(crate) struct Mail { pub subject: Option<String>, pub from: Option<String>, pub to: Vec<String>, pub cc: Vec<String>,
+                         pub date: Option<String> /* RFC 3339 */, pub body: String, pub body_source: &'static str /* "text/plain"|"text/html"|"rtf_only"|"none" */,
+                         pub attachments: Vec<AttachmentInfo> }
+pub(crate) fn parse_eml(bytes: &[u8]) -> Result<Mail>;
+pub(crate) struct MailDocument { /* Mail */ }    // impl TextDocument, unit_name "part": headers, body paragraphs, attachment list
+pub(crate) fn mail_document(mail: Mail) -> MailDocument;
+// msg.rs
+pub(crate) const MSG_LIMIT: u64 = 256 * 1024 * 1024;
+pub(crate) fn parse_msg(source: crate::documents::Source) -> Result<Mail>;
+```
+- **DOCX:**
+  - Find the main part via `_rels/.rels` (relationship `Type` ending `/officeDocument`, default `word/document.xml`) and the comments part via `word/_rels/document.xml.rels` (`Type` ending `/comments`). Every part is read through `ZipFile` + `take(DOCX_PART_LIMIT + 1)`.
+  - quick-xml 0.41 `Reader::read_event_into`. Handle `Event::GeneralRef` (0.41 reports entity references separately) by `quick_xml::escape::unescape(&format!("&{};", name))`.
+  - Paragraphs `w:p` become units `¶N: text` (N counts body paragraphs, including those inside table cells). Tables `w:tbl` become one unit per row: `[table T, row R] | cell | cell |`.
+  - `w:t`; `w:delText` (inside deletions); `w:tab` → `\t`; `w:br/w:cr` → `\n`; `w:noBreakHyphen` → `-`; `w:instrText` skipped.
+  - Tracked changes in CriticMarkup: `w:ins`/`w:moveTo` → `{++…++}`, `w:del`/`w:moveFrom` → `{--…--}`. Comments: a `w:commentRangeStart`…`w:commentRangeEnd` span becomes `{==…==}[cN]`. A trailing "Comments" section has one unit per comment: `[cN] Author (YYYY-MM-DD): text`.
+  - `summary`: `{paragraphs, tables, comments, insertions, deletions, revisionAuthors: {name: count}}`.
+- **Sheets:**
+  - XLSX bounded inflation (calamine never sees the original ZIP):
+    - Open `zip::ZipArchive` on the disk source. Early reject with `ZIP_BOMB` if `len() > ZIP_ENTRY_LIMIT`, the sum of declared `size()` > `XLSX_UNPACKED_LIMIT`, or any member > 1 MiB has a declared ratio > `ZIP_RATIO_LIMIT`.
+    - Then copy every entry whose name ends in `.xml` or `.rels` (all workbook parts; media, embeddings and `.bin` parts are skipped) into a new in-memory ZIP written with `zip::ZipWriter<std::io::Cursor<Vec<u8>>>` using `CompressionMethod::Stored`. Each entry is inflated through `(&mut entry).take(remaining + 1)`, where `remaining` = `XLSX_UNPACKED_LIMIT` minus the bytes already copied; producing more than `remaining` returns `ZIP_BOMB`. So the actual inflated bytes, not the declared sizes, are bounded, and memory is one copy ≤ `XLSX_UNPACKED_LIMIT`.
+    - Shared-string count (calamine 0.36.1 `read_shared_strings`, run inside `open_workbook_from_rs` before any of our sheet pre-scans, calls `strings.reserve(n)` with the untrusted `<sst uniqueCount="n">`): every copied entry whose name, with `\` → `/` and ASCII-lowercased (calamine's own path lookup), ends in `sharedstrings.xml` is inflated under the same `take` bound into a buffer and read once with quick-xml (the same 0.41 build calamine uses). Every `sst` start or empty tag (matched by local name, any prefix) is re-emitted without attributes whose local name is `count` or `uniqueCount`; all other attributes are kept. The entry is written to the `ZipWriter` as the original byte slices around the rebuilt tags (no second copy). calamine's `raw_attr(b"uniqueCount")` then finds nothing and never reserves. The same pass counts `si` elements (start or empty, an upper bound on the strings calamine pushes). More than `SHEET_TEXT_LIMIT / 48` returns `FILE_TOO_LARGE` ("too many shared strings"), so the table that calamine grows by doubling holds ≤ `SHEET_TEXT_LIMIT` bytes of `String` headers. A part with no `sst` element, or that quick-xml fails to parse, returns `DOCUMENT_INVALID`. All of this happens while building the copy, before calamine opens it.
+    - calamine opens that copy as `Source::Memory`; its own reads of Stored entries cannot inflate further.
+  - Range allocation bound (before calamine allocates a `Range` or copies cell strings):
+    - XLSX: before `worksheet_range(name)`, run `Xlsx::worksheet_cells_reader(name)` (calamine 0.36.1, inherent on `Xlsx`) and stream `next_cell()` to compute the min/max row and column of the cells; if `(rows × columns)` > `SHEET_CELL_LIMIT`, return `FILE_TOO_LARGE` ("sheet range too large") without building the range. The reader holds one cell at a time.
+    - XLSX expanded text, in the same pass: `next_cell()` yields `DataRef::SharedString(&str)` borrowing calamine's shared-string table (no copy), while `worksheet_range` later clones that string into every referencing cell. So the pre-scan sums the byte length of every text-carrying cell value (`SharedString`, `String`, `DateTimeIso`, `DurationIso`), counting each shared-string reference separately. If the sum exceeds `SHEET_TEXT_LIMIT`, return `FILE_TOO_LARGE` ("sheet text too large") before `worksheet_range` is called.
+    - XLS: calamine parses every sheet at open and pre-reserves from the BIFF `DIMENSIONS` record (`0x0200`), so before `open_workbook_from_rs`, read the `Workbook` (else `Book`) stream with `cfb` through `take(SHEET_LIMIT)` into memory and walk its records (u16 type, u16 length): the globals from offset 0 to the first `EOF`, then, as calamine does, one sheet walk per `BOUNDSHEET8` (`0x0085`) entry, from its `lbPlyPos` to the end of the next `EOF` record (or the stream end). calamine parses a substream once per entry that names it, so each byte must be parsed at most once: an `lbPlyPos` outside the stream, or a sheet substream that is identical to, or overlaps, another entry's substream or the globals substream (offset 0 to the end of the globals `EOF`), returns `DOCUMENT_INVALID` ("overlapping sheet substreams") before `open_workbook_from_rs`. For each sheet walk, take the extent from `DIMENSIONS` and from the row/column of cell records (`0x0203`, `0x0204`, `0x00FD`, `0x027E`, `0x00BD`/`0x00BE` with their last column, `0x0006`, `0x0201`, `0x0205`, `0x00D6`). If the larger of the two extents, summed over all sheet walks, exceeds `SHEET_CELL_LIMIT`, return `FILE_TOO_LARGE`.
+    - XLS expanded text, in the same record walk: calamine's `parse_label_sst` clones the SST string into every `LABELSST` cell. So the walk first parses the globals `SST` record (`0x00FC`, continued by `0x003C` `CONTINUE` records, including strings split across a `CONTINUE` boundary with a new flags byte) into a table of per-string upper-bound byte lengths (`cch × 3`, the most UTF-8 bytes one UTF-16 unit can decode to; rich-text runs and ext data are skipped, not stored). The table is a `Vec<u32>` of at most `SHEET_TEXT_LIMIT / 48` entries; one more entry returns `FILE_TOO_LARGE` ("too many shared strings"), because calamine's own SST `Vec<String>` costs 24–48 bytes per entry of as little as 3 stream bytes. Then every `LABELSST` (`0x00FD`) adds the length of the referenced entry (an out-of-range index → `DOCUMENT_INVALID`), and `LABEL` (`0x0204`), `RSTRING` (`0x00D6`) and formula `STRING` (`0x0207`) records add their own `cch × 3`. If this sum plus the formula charges (next bullet), over all sheet walks, exceeds `SHEET_TEXT_LIMIT`, return `FILE_TOO_LARGE` ("sheet text too large") before `open_workbook_from_rs`.
+    - XLS formula text, in the same record walk: calamine's `parse_formula` builds a `String` for every `FORMULA` record (`0x0006`) of every sheet at open, expanding 3-D references to sheet names and `PtgName` to defined-name text. The globals walk also records `max_sheet` = the largest `cch × 3` over `BOUNDSHEET8` names (at least 4, for `#REF`) and a `cch × 3` bound per `NAME` (`0x0018`) record, in record order (calamine's defined-name order). For each `FORMULA` record, the walk tokenizes `rgce` (`cce` = u16 at data offset 20, tokens from offset 22), consuming each ptg with the byte sizes calamine 0.36.1 `parse_formula` uses for the workbook's BIFF version, and adds an upper bound of the text that token produces:
+      - 3-D tokens (`0x3A`–`0x3D`, `0x5A`–`0x5D`, `0x7A`–`0x7D`): `max_sheet + 32` (sheet name, `!`, and a reference of ≤ 23 chars: columns up to 4 letters, rows up to 5 digits);
+      - `PtgName` (`0x23`/`0x43`/`0x63`): the referenced `NAME` entry's bound (5, for `#REF!`, when out of range);
+      - `PtgStr` (`0x17`): `cch × 3 + 2`; `PtgAttrSpace` (`0x19` with `0x40`/`0x41`): its `cch` (inserted spaces); `PtgNum` (`0x1F`): the exact length of the f64's `{}` rendering (up to ~330 chars, since there is no exponent), counted through a length-only `fmt::Write`;
+      - `PtgFunc`/`PtgFuncVar`: `20 + argc` (the longest `FTAB` name is 18 chars, plus parentheses and commas; `argc` as calamine reads it, ≤ 255);
+      - other references (`PtgRef`/`PtgArea` and their error forms): 24; `PtgErr`, `PtgBool`, `PtgInt`, `PtgArray`, `PtgNameX`, `PtgAttrSum`: 13 (the longest is `#GETTING_DATA`); operators, unary operators, `PtgPercent` and `PtgParen`: 2; `PtgExp`, `PtgMissArg`, `0x18` and the other `PtgAttr` forms: 0;
+      - an unknown ptg, or a token that runs past `cce`, ends that record's tokenization (calamine then drops the partial string and stores the fallback message below).
+      The sum of these per-token bounds is the record's `token_bound`. **Per-record charge:** calamine 0.36.1 `parse_formula` (xls.rs:1449) calls `String::with_capacity(rgce.len())` *before* it restricts the input to `cce`, and `Range::from_sparse` moves that `String` into the formula range without shrinking it. Here `rgce` is everything from data offset 20 of the record as calamine's `RecordIter` delivers it, i.e. including the data of immediately following `CONTINUE` (`0x003C`) records, which it appends. So every `FORMULA` record of every sheet walk is charged `rgce.len() + 2 × token_bound + 256`, whether or not tokenization succeeded: the full initial reservation, growth by doubling past it (capacity ≤ 2× the text), and a fixed 256 bytes for the `Unrecognised formula for cell (r, c): <error>` string calamine stores whenever `parse_formula` returns an error (unknown ptg, empty operand stack, `InvalidFormula` stack mismatch, including `cce = 0`; the message is ≤ ~100 chars, which `format!` grows to ≤ 144 bytes of capacity).
+      The worst case per input byte is a 3-D token (≤ 7 + 2 × 797 bytes charged for 7 rgce bytes, ≈ 229×); padding after `cce` is charged byte for byte through `rgce.len()`, and the 256-byte fallback allowance applies per record of ≥ 24 stream bytes. All of it is counted before calamine allocates. Transient copies inside one formula (`split_off` for operators and functions) are at most 2× that formula's bound.
+    - XLS container: if the pre-scans pass, the bytes read above are written as the single stream `Workbook` into a new in-memory CFB (`cfb::CompoundFile::create(std::io::Cursor<Vec<u8>>)`, `create_stream`, `flush`, `into_inner`), and calamine opens that copy as `Source::Memory`, never the original file. calamine's own CFB reader calls `Vec::with_capacity` with the header's FAT-sector count (offset 44) and with a u32 it reads at offset 62, and it follows sector chains without loop detection. In the copy, those counts and chains are written by the `cfb` crate for one stream ≤ `SHEET_LIMIT`, so they stay small and consistent, and the stream calamine parses is exactly the one the pre-scans walked. Memory: the copy ≤ `SHEET_LIMIT` + CFB overhead; the pre-scan buffer is dropped before calamine opens.
+  - `calamine::Sheets::Xlsx(calamine::open_workbook_from_rs(memory_source)?)`, or `Sheets::Xls(...)` for `.xls` on the in-memory CFB copy; uses the `calamine::Reader` trait.
+  - Units are rows over all sheets in workbook order. A sheet's first row gets the heading `=== sheet i/n «name» (rows a–b, columns A–K)[ hidden] ===` and a column line `row\tA\tB…`. A row line is `<rowNumber>\t<cell>\t…` with trailing empty cells trimmed. Cells use `Data` `Display`, except `DateTime` → ISO via `ExcelDateTime::to_ymd_hms_milli()`. Tabs and newlines inside cells become spaces and ` ⏎ `.
+  - Locator `{"sheet":"name","row":n}`. `sheet` selects the starting/only sheet (name or 1-based index). Inspect: `{"sheets":[{"index","name","visible","rows","columns"}]}`.
+- **EML:**
+  - `mail_parser::MessageParser::default().parse(bytes)`. Native charsets cover koi8-r, cp1251, ibm866 and iso-8859-5; no `full_encoding` feature is needed.
+  - `subject()`, `from()/to()/cc()` via `Address::iter()` (`name()`/`address()`), `date().map(|d| d.to_rfc3339())`.
+  - Body: `body_text(0)`, which converts HTML to text when no text part exists.
+  - Attachments: `attachments()` with `MimeHeaders::attachment_name()`/`content_type()`, `contents().len()`, `is_message()`. Inline means `Content-Disposition: inline` or a `Content-ID`.
+- **MSG** (MS-OXMSG; streams named `__substg1.0_<PPPP><TTTT>`, where `001F` = UTF-16LE, `001E` = 8-bit decoded by `codepage::to_encoding(PidTagMessageCodepage 0x3FFD | PidTagInternetCodepage 0x3FDE)`, fallback `encoding_rs::WINDOWS_1251`, `0102` = binary):
+  - subject `0x0037`; sender `0x0C1A` + `0x5D01` (fallback `0x0C1F`, `0x0042`/`0x0065`); `0x0E04` display-to; `0x0E03` display-cc; body `0x1000`; HTML `0x1013` (binary; charset per `0x3FDE`, converted by `mail_parser::decoders::html::html_to_text`). Compressed RTF `0x1009` with no body/HTML gives `body_source = "rtf_only"`.
+  - Dates come from `__properties_version1.0`: 32-byte header, then 16-byte entries (tag u32 LE, flags u32, value u64). `PidTagMessageDeliveryTime 0x0E060040`, else `PidTagClientSubmitTime 0x00390040`. FILETIME is converted to RFC 3339 via `chrono::DateTime::<Utc>::from_timestamp`.
+  - Attachments: storages `__attach_version1.0_#XXXXXXXX`, with `0x3707` long name (else `0x3704`, `0x3001`), `0x370E` MIME type, data stream `__substg1.0_37010102` (size = entry length; not read in Ф4), and storage `__substg1.0_3701000D` → `embedded_message`.
+  - Open with `cfb::CompoundFile::open(source)`, `open_stream`, `entry(..).len()`, `read_storage`. Every stream read is capped by `take()`.
+
+### C11 — Containers and document search (Ф5)
+
+```rust
+// archive.rs  (uses crate::documents::{ZIP_ENTRY_LIMIT, ZIP_RATIO_LIMIT} from Ф4)
+pub(crate) const MEMBER_LIMIT: u64 = 256 * 1024 * 1024;
+pub(crate) struct MemberInfo { pub name: String /* normalized */, pub size: u64, pub compressed_size: u64, pub is_dir: bool,
+                               pub readable: bool, pub reason: Option<&'static str> }
+pub(crate) fn list_members(source: crate::documents::Source) -> Result<Vec<MemberInfo>>;     // sorted by name; ≤ ZIP_ENTRY_LIMIT
+pub(crate) fn read_member(source: crate::documents::Source, name: &str, limit: u64) -> Result<(MemberInfo, Vec<u8>)>;
+pub(crate) fn decode_name(raw: &[u8]) -> String;            // UTF-8 if valid; else IBM866; if that yields U+2500–U+259F, use WINDOWS_1251 when it yields none
+pub(crate) fn normalize_name(name: &str) -> Option<String>; // '\\'→'/', strip leading '/', drop "" and ".", None on "..", NUL, drive prefix, or "::"
+// email.rs / msg.rs
+pub(crate) fn eml_attachment(bytes: &[u8], index: usize) -> Result<(AttachmentInfo, Vec<u8>)>;
+pub(crate) fn msg_attachment(source: crate::documents::Source, index: usize) -> Result<(AttachmentInfo, Vec<u8>)>;
+// doc_search.rs
+pub(crate) const DOC_SCAN_LIMIT: u64 = 512 * 1024 * 1024;
+pub(crate) const SEARCH_DOC_FILE_LIMIT: u64 = 64 * 1024 * 1024;
+pub(crate) struct DocHit { pub locator: serde_json::Value, pub snippet: String }
+pub(crate) fn find_in_document(doc: &mut dyn crate::documents::TextDocument, matcher: &regex::Regex,
+                               start_unit: usize, skip_in_unit: usize, max_hits: usize,
+                               deadline: std::time::Instant) -> Result<(Vec<DocHit>, Option<(usize, usize)>)>;
+```
+- **Addressing:** `path` = `<disk path>("::"<member>)*` (≤ `CONTAINER_DEPTH`). `relative()` keeps rejecting `:`, so `::` is split off before the disk part is validated.
+  - ZIP member: its normalized name. EML/MSG attachment: the decimal 1-based index (`letter.eml::2`).
+  - Each member's format comes from its own name (attachments: the attachment file name). `blocked()` applies to every member path.
+  - A member whose raw name normalizes to `None`, or that is encrypted, or uses a method other than Stored/Deflated, is listed with `readable:false` and a `reason`. Reading it returns the matching error.
+  - Member read: declared `size() ≤ min(MEMBER_LIMIT, format limit)`; declared ratio ≤ `ZIP_RATIO_LIMIT` when > 1 MiB; actual bytes read through `take(declared + 1)`, and exceeding the declared size returns `ZIP_INVALID`.
+  - Nested containers are opened from `Source::Memory`.
+- **Container listing:** `list_directory` on a container uses the same entry shape (`name`, `path` = display, `relativePath`, `type` file/directory, `size`) plus `compressedSize`/`readable`/`reason` for ZIP and `index`/`mimeType` for attachments. Directories implied by member paths are synthesized; `depth` counts `/` levels below the given prefix. The cursor is `Walk` with `p` = member components.
+- **Document search:**
+  - `search_text` folder mode visits files in walk order. Text uses today's path. Pdf/Docx/Xlsx/Xls/Eml/Msg up to `SEARCH_DOC_FILE_LIMIT` use `find_in_document` with `max_hits = 1`. Other formats are skipped.
+  - Unfinished documents: if `find_in_document` stops at the deadline (or another per-call budget) and returns a position, the file is not advanced past. The `Walk` cursor gets `p` = that document's components, `f` = its fingerprint and `(u, o)` = the returned position. The next call builds the `Walker` with `include_resume_entry = true`, so the document is re-found by comparing names read from disk (the cursor never opens a path). It resumes `find_in_document` at `(u, o)` when the fingerprint still matches, or at unit 0 when the file changed. The walk moves past the file only after a hit (one match per file) or exhaustion. Each call processes at least one unit (progress guarantee), so no prefix is re-searched endlessly. If the document is gone, the walk continues with the next entry.
+  - A result gets `"locator"` and a snippet prefixed `[p. N]`, `[sheet «S» row R]`, `[¶N]` or `[mail]`. The response adds `documentsSearched`.
+  - `DOC_SCAN_LIMIT` counts the source bytes read.
+  - Single-document mode (`path` resolves to a file or member) returns all hits up to `limit` and continues with a `Find` cursor `(u, o)`.
+
+## Test strategy
+
+General rules for every phase: run the gate commands from Global Constraints, plus `python3 -B -m unittest test/test_mcp_experiment.py` (Ф1 onward). All fixtures are synthetic: built in Rust test code (in memory or `tempfile`) or in `test/native.test.mjs` inside its temp fixture dir. **Never** read, copy or quote files under `Work (local)` in automated tests. There is no automation against ChatGPT, no pixel-exact image comparison (check dimensions, MIME type, decodability and a coarse dark/light probe) and no test of lopdf internals beyond the placeholder guard. Each phase may run optional **manual local validation** on the listed real samples. It reports only technical metadata (format, page/sheet/attachment counts, page-kind counts, timings, RSS, error codes), never content.
+
+- **Ф1:**
+  - Unit tests: `mcp.rs` `result()` for `image` (text block first, image block with `data`/`mimeType`, no `data` in `structuredContent`), `binary` (text + resource with blob; no blob in `structuredContent`), `text` unchanged.
+  - Integration: `read_file` on a 1×1 PNG written by the test gives an `image` block whose `data` equals the file's base64, plus a text block. The binary test (`sample.pdf`, 3 bytes) still finds a `resource` block with blob `/wAB`.
+  - Python: the generator creates every probe in a fresh temp dir with valid PNG/PDF signatures, `text-200k.txt` has exactly 200 000 characters with markers at the planned offsets, the answers file lies outside the probe dir, codes do not appear in file names or in the uncompressed bytes of the image-carrying PDFs (`page-scan.pdf`, `pdf-4mb.pdf`, `pdf-12mb.pdf`), and an existing target dir is refused. The text control `page-text.pdf` is exempt from the uncompressed-bytes assertion: its uncompressed content is `Codeword: <CODE>` by design (Ф1 Step 4).
+- **Ф2:**
+  - cursor: round-trip, tamper/kind/hash/length rejection, stale fingerprint.
+  - walk: deterministic pre-order, resume skips subtrees without reading them (counted via a test hook or entry count), blocked names hidden, symlinks not followed. A directory larger than the window (window size lowered through a test-only parameter) is enumerated completely, in order, without duplicates, both in one walk and across resumes from every intermediate `p`.
+  - pdf with lopdf-built fixtures:
+    - Helvetica ASCII text page → `Text`.
+    - Type0/Identity-H font with a ToUnicode CMap → Cyrillic text. Use bfchar entries if lopdf does not parse a bfrange identity.
+    - `3 Tr` invisible text over a large image → `OcrText`.
+    - Latin-only invisible text over a ≥ 1 MP image → `suspicious = no_cyrillic_over_scan`.
+    - Image only → `NoText`; blank page → `Empty`.
+    - Line breaks via `Td`/`T*`, a Form XObject's text, `startPage`/`endPage`, `page_ranges`.
+    - Placeholder guard: after load an image stream's content length is 1 and carries `LocalFilesPlaceholder`; with the id in `keep_images` the original content is intact.
+    - Encrypted metadata path, invalid bytes → `DOCUMENT_INVALID`.
+  - documents: chunking cut inside a unit, cursor chain reassembles the full text exactly, `STALE_CURSOR` after the file changes, `guarded` turns a panic into `DOCUMENT_INVALID`.
+  - Integration (Node):
+    - Exact tool list (11 names).
+    - `search_files` over 25 files with `limit:10`: 3 calls, union = 25, no duplicates, sorted.
+    - `search_text` resumes after the result limit.
+    - `list_directory` cursor over > `limit` entries.
+    - `read_text_file` of a 6 MiB file succeeds and 64 MiB + 1 gives `FILE_TOO_LARGE`; `search_text` still reports `skippedLargeFiles` for a > 5 MiB text file.
+    - A hand-built two-page PDF (JS string with a computed xref; page 1 Helvetica text, page 2 a Flate gray image XObject only): `read_document` shows the page markers and `units`; `inspect_document` gives `pages.text = "1"`, `pages.no_text = "2"`; `fetch` returns text; `read_file` on the PDF returns the document text.
+    - `read_document` on `.doc` → `UNSUPPORTED_FORMAT`. `read_file` on a `.heic`, a `.doc` and an ASCII `.rtf` file (`{\rtf1 ...}`) → `UNSUPPORTED_FORMAT` with the hint (no `resource` block, no raw RTF text); `read_text_file` on the same `.rtf` → `UNSUPPORTED_FORMAT`.
+    - Binary-fixture migration (Ф2 routes `.pdf` to the PDF reader): the existing "binary resources" test at `test/native.test.mjs:69` writes its 3 bytes `ff 00 01` as `sample.bin` instead of `sample.pdf` and keeps the assertion that `read_file` returns a `resource` block with blob `/wAB`. A separate assertion writes the same 3 bytes as `invalid.pdf` and expects `read_file` → error `DOCUMENT_INVALID` (no `resource` block).
+    - All existing security tests unchanged.
+  - Ignored test `large_pdf_budget` (`cargo test --release -- --ignored large_pdf_budget`) streams a synthetic ≥ 300 MiB / ≈ 980-page PDF to a temp file (random-byte DCT image streams plus an invisible-text content stream per page), then runs `inspect` and a `read_document` chunk at page 900, asserting < 10 s. Peak RSS is checked manually with `/usr/bin/time -l` (macOS) against file size + 128 MiB and recorded in the phase report.
+- **Ф3 (per branch):**
+  - imaging units: EXIF orientation (synthetic JPEG with an orientation tag, or a decoder test seam if writing EXIF is impractical, documented), downscale to ≤ 2048, region crop maps fractions correctly, passthrough when allowed, PNG vs JPEG choice, `OUTPUT_TOO_LARGE` loop, decode limit → error, multi-page TIFF written with the `tiff` encoder (`page` 2 decoded, `pages = 3`), HEIC → `UNSUPPORTED_FORMAT`, invalid region → `INVALID_REGION`.
+  - pdf_page units: DCT passthrough (JPEG made by `JpegEncoder`), Flate gray raw, 1-bit with `/Decode [1 0]`, Indexed, CCITT G4 encoded with `fax::encoder::Encoder` + `fax::VecWriter`, `/Rotate 90`, JBIG2 (fake bytes) → fallback per channel, composite page (a full-page scan plus a small stamp image; a scan plus visible text) → fallback, `single_page_pdf` output reloads with lopdf as 1 page containing the image and no placeholder. Calibration (A+pdf/B): `page_pdf_limit(p) < PAGE_PDF_MIN_USABLE` for `p` = 1, 4 096 and 200 000 (a recorded A+pdf is then built as A, a recorded B as C) and `≥ PAGE_PDF_MIN_USABLE` for `p` = 400 000 and 12 000 000. B additionally: `branch_b_image_limit(page_pdf_limit(p))` is `None` for small positive `pdf_max` (`p` = 1, 4 096 and 200 000) and `Some(v)` with `v > 0` and `v + PDF_WRAP_OVERHEAD == page_pdf_limit(p)` for `p` = 400 000 and 12 000 000; the wrapper overhead (`wrap_image_as_pdf(img).len()` minus the image stream length, for a 2048×2048 JPEG and a Flate gray image) is ≤ `PDF_WRAP_OVERHEAD`; a wrapped image above `PAGE_PDF_OUTPUT_LIMIT` returns `OUTPUT_TOO_LARGE`.
+  - Integration: `read_file` on a PNG > 2048 px returns an `image` block (A) / a PDF resource (B) / `not_viewable` (C); `region` changes dimensions; the scanned page of the Node-built PDF is viewable per branch.
+- **Ф4:**
+  - Units:
+    - DOCX built in-test with `zip::ZipWriter` (rels, document with a table, `w:ins`, `w:del`/`w:delText`, a comment range, `&amp;` entity, comments.xml) → exact CriticMarkup output and summary counts.
+    - XLSX built in-test (minimal parts: `[Content_Types].xml`, rels, workbook, two sheets, sharedStrings, a date cell) → rows/locators/`sheet` selection.
+    - XLS built in-test with `cfb::CompoundFile::create` writing a `Workbook` stream with BIFF8 records BOF(0x0809, dt 0x0005), BOUNDSHEET8(0x0085, `lbPlyPos` patched to the sheet BOF offset), EOF(0x000A), then sheet BOF(dt 0x0010), DIMENSIONS(0x0200), LABEL(0x0204, UTF-16 string), NUMBER(0x0203), EOF. This was verified during planning to read back with calamine 0.36.1 as `[["Сумма",""],["",1234.5]]`.
+    - XLSX zip-bomb pre-check, and the bounded inflation: a highly compressible entry inflated with a small limit (limit passed as a parameter) → `ZIP_BOMB`.
+    - Range bound: an XLSX sheet with cells at `A1` and `XFD1048576`, and an XLS (BIFF builder above) with cells at row 0/col 0 and row 65535/col 255 → `FILE_TOO_LARGE` before any range is built.
+    - Expanded-text bound (repeated shared strings; the text limit is passed as a parameter, like the inflation test, so the test stays small): an XLSX whose `sharedStrings.xml` holds one 10 000-character string referenced by 200 cells, and an XLS (BIFF builder above plus an `SST` record) with one 10 000-character SST entry referenced by 200 `LABELSST` records, → `FILE_TOO_LARGE` with a 1 MiB text limit, before `worksheet_range` / `open_workbook_from_rs` runs; the same workbooks read normally with a 64 MiB limit. One XLS case splits the SST string across a `CONTINUE` record.
+    - Forged shared-string count: an XLSX whose `sharedStrings.xml` declares `<sst count="1099511627776" uniqueCount="1099511627776">` (2^40, a reservation calamine would abort on) with two real entries. The derived in-memory ZIP is checked first, before calamine opens it: its `sharedStrings.xml`, read back with quick-xml, has an `sst` tag with no `count`/`uniqueCount` attribute. Then `sheets::open` reads both strings normally. With the shared-string entry cap passed as a parameter (like the text limit) set to 1, the same XLSX, and an XLS whose `SST` holds 2 entries, → `FILE_TOO_LARGE` before `open_workbook_from_rs` runs.
+    - Forged CFB header: the BIFF fixture above with its CFB header's FAT-sector count (offset 44) patched to `0xFFFFFFFF` (the `cfb` crate's default permissive validation still opens it). The in-memory CFB handed to calamine is checked first: its offset-44 count × 4 and its u32 at offset 62 × 4 are each ≤ 1 MiB. Then `sheets::open` reads `[["Сумма",""],["",1234.5]]`.
+    - XLS formula text (the text limit passed as a parameter): the BIFF builder plus a `NAME` record with a 255-character name, an `EXTERNSHEET` record, and 200 `FORMULA` records whose `rgce` mixes `PtgName`, `PtgRef3d`, `PtgStr`, `PtgNum` 1e300, `PtgAttrSpace`, `PtgFuncVar`, `PtgArea` at column 65535 and a binary operator. With a 64 KiB limit → `FILE_TOO_LARGE` before `open_workbook_from_rs`. With 64 MiB it reads normally, and the pre-scan's formula charge is asserted ≥ the summed length of the strings calamine's `worksheet_formula` returns for the sheet.
+    - XLS formula allocations (the text limit passed as a parameter; fixtures ≤ 2 MiB):
+      - Padded `FORMULA` records: 200 records whose `rgce` is `cce = 3` (one `PtgInt`) followed by ~8 KiB of padding are charged ≥ 200 × 8 KiB, so a 1 MiB limit → `FILE_TOO_LARGE` before `open_workbook_from_rs`, while the same workbook reads normally with 64 MiB. One padded record is split by a `CONTINUE` record and is charged its concatenated length.
+      - Empty and error formulas: `cce = 0`, an unknown ptg, and a binary operator with an empty stack are each charged ≥ 256 bytes; with 64 MiB the workbook reads normally and the charge is asserted ≥ the summed length of the fallback strings `worksheet_formula` returns.
+      - Overlapping substreams: two `BOUNDSHEET8` entries with the same `lbPlyPos`, an entry pointing inside another sheet's substream, an entry pointing into the globals substream, and an `lbPlyPos` past the stream end → `DOCUMENT_INVALID` before `open_workbook_from_rs`.
+    - EML fixtures as byte strings: koi8-r + quoted-printable + RFC 2047 subject; multipart/mixed > related > alternative with an inline PNG and a PDF attachment; HTML-only body.
+    - MSG built with `cfb` streams (UTF-16 subject/body, 8-bit subject with codepage 1251, properties stream with delivery time, one attachment storage, one embedded-message storage).
+  - Integration: synthetic DOCX, XLSX and EML through `read_document`/`inspect_document`/`read_file`, written by the Node test as bytes generated in JS. The DOCX/XLSX ZIP can be produced with a tiny STORED-only ZIP writer in the test, CRC via `zlib.crc32` (Node ≥ 22.2).
+- **Ф5:**
+  - archive units: `decode_name` on CP866 bytes (e.g. `Иск.pdf` encoded in IBM866), UTF-8, box-drawing → 1251 fallback; `normalize_name` cases; ratio/size/entry-count guards; read cap when actual > declared; encrypted/unsupported method listed unreadable.
+  - doc_search units over each `TextDocument` type. Folder-mode resume: a document cut by an already-expired deadline (one unit processed) is resumed at `(u, o)` on the next call and its later hit is found; the file is not skipped and its first unit is not searched again.
+  - Integration:
+    - ZIP built in the Node test (STORED writer with flag-0 CP866 names, a nested zip, a `.env` member hidden, a PDF member readable via `a.zip::doc.pdf`, `inner.zip::x.txt` at depth 2, depth 4 → `NESTING_TOO_DEEP`).
+    - EML attachment `letter.eml::1` read.
+    - `search_text` finds a phrase inside the synthetic PDF/DOCX with locator; single-document mode returns 3 hits with page numbers and a `Find` cursor.
+    - A folder walk with `limit` 5 over 23 mixed files completes over cursors with no duplicates.
+    - Exact tool list unchanged at 11.
+
+## Risks / unknowns / assumptions
+
+- Ф1 — SECURITY: Step 4's probe generator builds output file paths (the probe folder, the probe files inside it and the answers file) from the CLI-supplied `<new-dir>` and `--answers` arguments, which the code does not control (Step 4 already refuses existing targets).
+- Ф2 — SECURITY: Step 3 decodes client-supplied continuation cursors (deserialized untrusted input that steers traversal). Step 2 refactors the capability-based open path (`RootDir::open_file`) used by every read. Step 6 parses untrusted PDF bytes with lopdf (decompression bombs, malformed objects, recursion).
+- Ф3 — SECURITY: Steps 2–4 decode untrusted image formats and PDF image streams (JPEG/PNG/TIFF/CCITT/raw samples with attacker-chosen dimensions), and Step 4 rebuilds a new PDF from untrusted objects.
+- Ф4 — SECURITY: Steps 1–4 parse untrusted DOCX (ZIP + XML), XLSX/XLS (calamine), EML (MIME, charsets) and MSG (CFB) data.
+- Ф5 — SECURITY: Steps 1–3 build logical paths from untrusted archive member names and attachment indexes, and decompress untrusted ZIP members (zip bombs, name-based escape, nested containers).
+- **R1 — ChatGPT may not deliver images (high probability).** An OpenAI staff reply on the community forum (22 Apr 2026, thread "ChatGPT connector returns empty {} for MCP tool results with type: image") says image blocks are valid MCP but are not currently a model-visible vision path, and that image-only results show as `{}`. Mitigation: Ф1 measures it. Every image/binary result carries a text block. Branch C keeps the server lightest (no `image` crate) and still delivers all text features.
+- **R2 — Response-size ceiling unknown** (ChatGPT, tunnel-client, JSON-RPC line size). Mitigation: probes C1–C6 in Ф1. `OUTPUT_LIMIT`, `IMAGE_OUTPUT_LIMIT` and `PAGE_PDF_OUTPUT_LIMIT` are calibrated, not guessed.
+- **R3 — Reliance on lopdf loading semantics** (filter applied per object; empty streams re-read; no rayon). Verified by reading the lopdf 0.45.0 source and compiling the filter during planning. Mitigation: the placeholder unit test fails loudly if semantics change. Keep the requirement `lopdf = "0.45"`.
+- **R4 — Memory on huge PDFs.** Synthetic measurement: 326 MiB → 354 MB peak RSS filtered. Real files may have many more objects. Mitigation: the `large_pdf_budget` ignored test plus optional manual measurement on the real 330 MB file. If peak RSS > file + 128 MiB or time > 10 s, the implementer lowers `PDF_LIMIT` and records why. Encrypted PDFs use ~2× memory, hence `PDF_ENCRYPTED_LIMIT`.
+- **R5 — Text-extraction quality** (missing ToUnicode, Identity-H without a CMap, odd layouts, rotated text). Mitigation: classification flags `undecodable`. The page view and `inspect` let the model fall back to the image. Quality is checked manually on the PDFsharp/iTextSharp/Adobe Scan samples (metadata only: chars per page, kinds).
+- **R6 — Parser panics and stack overflows.** Panics are converted to `DOCUMENT_INVALID` by `guarded` (`panic = "abort"` must never be introduced). Stack overflow aborts the worker and cannot be caught, so mitigate with our own recursion limits (forms ≤ 3, containers ≤ 3) and lopdf's `MAX_NESTING_DEPTH`. The tunnel-client restarts the worker on exit; that recovery path is unverified.
+- **R7 — calamine cannot be capped from outside, so its inputs are bounded before it runs.** A crafted XLSX can inflate beyond its declared sizes, or declare a huge `<sst uniqueCount>` that calamine passes straight to `Vec::reserve` while opening. A crafted extent (or an XLS `DIMENSIONS` record) can make calamine allocate a huge `Range`. A crafted XLS can also declare huge CFB header counts, which calamine's own CFB reader passes to `Vec::with_capacity`, or have sector chains that loop. And calamine builds and keeps a formula `String` for every XLS `FORMULA` record at open, reserved at the record's full `rgce.len()` (not `cce`) and never shrunk, or replaced by an "Unrecognised formula …" message on error; several `BOUNDSHEET8` entries naming one substream would multiply that. Mitigation (C10): calamine only opens containers we wrote. XLSX parts are inflated by our code through `take()` into a Stored in-memory copy capped at `XLSX_UNPACKED_LIMIT` (actual bytes), with `count`/`uniqueCount` stripped from `sharedStrings.xml`, so calamine never inflates attacker data and never reserves from an attacker count. The XLS `Workbook` stream is re-wrapped in an in-memory CFB written by the `cfb` crate. Sheet extents are pre-scanned (XLSX cell reader, XLS BIFF records, one walk per `BOUNDSHEET8` entry; identical or overlapping sheet substreams return `DOCUMENT_INVALID`, so each byte is parsed once) against `SHEET_CELL_LIMIT` before any `Range` is allocated. Because calamine copies a shared string into every cell that references it (`worksheet_range` for XLSX, `parse_label_sst` for XLS), the same pre-scan sums expanded cell-text bytes per reference, plus a per-`FORMULA` charge of `rgce.len() + 2 × token_bound + 256` (initial reservation, growth, error-message fallback), against `SHEET_TEXT_LIMIT` before those allocations happen. Other count-driven reservations checked in calamine 0.36.1's XLSX/XLS open path and `worksheet_range`: `cells.reserve` in `worksheet_range_ref` (only when the declared dimension is below 100 000), `HashMap::with_capacity(zip.len())` (our copy, ≤ `ZIP_ENTRY_LIMIT` entries), XLS `cells.reserve(rows × cols)` from `DIMENSIONS` (≤ `SHEET_CELL_LIMIT` via the pre-scan), XLS `String::with_capacity(cch)` (u8/u16 `cch`), XLS `parse_formula`'s `String::with_capacity(rgce.len())` (charged in full per record by the pre-scan), and the `RRTabId` reserve (≤ record length). All of these are bounded by the measures above or by constants. Residual: the shared-string table does not scale with input bytes (an empty `<si/>` costs 5 bytes of XML but 24–48 bytes of table). It is bounded instead by the `SHEET_TEXT_LIMIT / 48` entry cap (≤ `SHEET_TEXT_LIMIT` of `String` headers), plus the string bytes themselves (≤ the inflated part or the stream). Cell vectors scale with the bounded cell count. Panics become `DOCUMENT_INVALID`.
+- **R8 — ZIP name encodings.** CP866 is the norm for Windows-Explorer zips in Russian locales. The 1251 fallback is a heuristic, and wrong guesses only affect display names. Verified that zip 8.6 replaces raw names with the Info-ZIP Unicode Path field when present.
+- **R9 — Binary size.** The full dependency set compiled alone came to a 4.2 MB release binary (the current `local-files` is 5.2 MB), so expect roughly +3–4 MB in total, less in branch C (no `image`/`tiff`/`fax`). There are minor duplicates (`miniz_oxide` 0.8/0.9, `weezl` 0.1/0.2). There are no C or `-sys` crates (checked with `cargo tree`).
+- **R10 — MSG parsing has no real samples** (the user has none). Tag numbers come from MS-OXPROPS. The implementer cross-checks each tag against the spec and covers both `001F` and `001E` strings.
+- **R11 — Deterministic order and non-UTF-8 names.** Names are compared as `to_string_lossy` strings. Invalid UTF-8 names (impossible on APFS, rare on NTFS) could be revisited or skipped across cursors. Documented.
+- **R12 — Search cost.** Folder-wide document search re-parses files on every call (no index by design). It is bounded by `DOC_SCAN_LIMIT`, the per-file limit and the deadline, with a cursor. Large scanned PDFs are skipped by size.
+- **R13 — Windows has no OS sandbox**, so parser bugs are exposed only to code-level limits. All readers work on memory/`Read+Seek` and never write.
+- **R14 — Tool schema changes** require the user to refresh the connector's tools in ChatGPT (README already says so). Ф1's procedure includes it.
+- **R15 — Cloud placeholders** (OneDrive/iCloud "dataless" files) download on read, so a single read may exceed time expectations. Budgets are checked between files, not mid-read.
+- **R16 — The image crate's CMYK/odd JPEG handling and EXIF writing for tests** are not verified here. If a synthetic EXIF fixture is impractical, the implementer documents a test seam instead.
+- **A1 — Assumption:** `cap_std::fs::File` implements `Read + Seek` (verified in cap-std 4.0.3), so ZIP/CFB/TIFF/calamine can stream from disk without full reads.
+- **A2 — Assumption:** the user's runtime is the installed app. The experiment installs the dev build with the existing DMG installer, which backs up the release app automatically. Version stays 2.1.2 until Ф5.
+- **A3 — Assumption:** the root ids validated in `config.rs` (`[a-z][a-z0-9_-]{0,31}`) never contain `:`, so `id.split_once(':')` in `fetch` stays correct with `::` member paths.
+
+## Phases
+
+## Ф1: Experiment — image content, probe files, manual ChatGPT check
+
+**Files in this phase:**
+- Create: `scripts/make-mcp-experiment.py`, `test/test_mcp_experiment.py`, `docs/chatgpt-content-experiment.md`
+- Modify: `native/filesystem.rs`, `native/mcp.rs`, `README.md`
+- Test: `test/native.test.mjs`, `native/mcp.rs` (`#[cfg(test)]`), `test/test_mcp_experiment.py`
+
+**Interfaces:**
+- Consumes: nothing
+- Produces: the C1 result mapping (`mcp.rs::result` with `kind:"image"` → `[text, image]`, `kind:"binary"` → `[text, resource]`). The C2 outcome line in `docs/chatgpt-content-experiment.md` (`Outcome: A|A+pdf|B|C; image_max=…; pdf_max=…; text_max=…`).
+
+Steps:
+1. `native/filesystem.rs`:
+   - Add private `fn image_mime(path: &Path) -> Option<&'static str>` (png → `image/png`, jpg/jpeg → `image/jpeg`, gif → `image/gif`, webp → `image/webp`).
+   - In `Filesystem::read`, when `binary` is true and `image_mime` is `Some`, read with `BINARY_LIMIT` and return the C1 image JSON before the UTF-8 check.
+   - No decoding, resizing or new dependencies.
+2. `native/mcp.rs`:
+   - Implement C1 (`summary()` + image/binary arms).
+   - New `read_file` description: "Read UTF-8 text; PNG/JPEG/GIF/WebP images as MCP image content; other bounded binary files as an embedded resource."
+   - Append one sentence to the instructions: images are returned as image content with a text summary.
+   - Add `#[cfg(test)] mod tests` covering `result()`.
+3. `test/native.test.mjs`:
+   - New test: write a 1×1 PNG, call `read_file`, assert an `image` block (data = file base64, mimeType `image/png`), a `text` block, and no `structuredContent.data`.
+   - Change the binary test at :69-71 to `content.find(c => c.type === 'resource')`.
+4. `scripts/make-mcp-experiment.py` (Python 3 stdlib only; `argparse`, `secrets`, `zlib`, `struct`, `json`):
+   - Usage: `python3 scripts/make-mcp-experiment.py <new-dir> [--answers <file>]`. Refuse if `<new-dir>` exists. Default answers path: `<new-dir>.answers.json` next to the folder; open it with `'x'` mode, refuse if it exists.
+   - Each probe gets its own random 6-char code from `ACDEFHJKMNPRTUVWXY34679`, rendered with a hand-coded 5×7 bitmap font. Codes never appear in file names or as PDF text, except in `page-text.pdf`, whose text *is* its probe.
+   - Probes:
+     - `image-small.png` (≈ 900×300 gray, code at scale 16).
+     - `image-2mb.png`, `image-6mb.png`, `image-12mb.png`: gray noise sized so the file is ≈ 2/6/12 MB, code in a white box at the center.
+     - `page-text.pdf`: one page, Helvetica text `Codeword: <CODE>`, uncompressed content.
+     - `page-scan.pdf`: one page, only a Flate gray image XObject with the code, no text.
+     - `pdf-4mb.pdf`, `pdf-12mb.pdf`: scan-style pages whose noise image reaches ≈ 4/12 MB, code visible.
+     - `text-200k.txt`: exactly 200 000 characters of Cyrillic filler lines with `MARKER-1..5: <CODE>` lines starting near offsets 1 000 / 50 000 / 100 000 / 150 000 / 199 000.
+   - Print a table (file, bytes) to stdout and write `{file: code}` plus byte sizes to the answers file.
+5. `test/test_mcp_experiment.py`: load the script via `importlib.util.spec_from_file_location` (same pattern as `test/test_windows_packaging.py`) or run it as a subprocess in a temp dir. Assert what the Ф1 test strategy lists.
+6. `docs/chatgpt-content-experiment.md` (Russian, step by step):
+   - **(1) Build and install:** `sh scripts/build-installer.sh` → open the DMG → run "Install Strigov Local MCP" (the previous app is moved to a `Strigov Local MCP backup …` folder) → menu-bar icon → confirm the tunnel is running (`~/Applications/Strigov Local MCP.app/Contents/MacOS/local-files status` shows `ready: true`).
+   - **(2) Generate probes:** `python3 scripts/make-mcp-experiment.py ~/MCP-experiment`. Connect **only** `~/MCP-experiment` as a folder named "MCP-эксперимент". Never connect its parent, where the answers file lives.
+   - **(3) Prepare ChatGPT:** Settings → connector → refresh the tool list; new chat, connector enabled; write down the model used (e.g. GPT Pro / Thinking).
+   - **(4) Run the probes**, one prompt per probe, verbatim:
+     - A1: «Вызови инструмент read_file с root "MCP-эксперимент" и path "image-small.png". Прочитай кодовое слово, написанное крупными буквами на картинке. Если изображения в ответе инструмента нет, прямо скажи об этом и перечисли, какие части ответа ты получил (text, image, resource, structuredContent). Не угадывай.»
+     - B1/B2: the same for `page-text.pdf` ("кодовое слово в тексте PDF") and `page-scan.pdf` ("кодовое слово на изображении страницы").
+     - C1–C3: `image-2mb.png`, `image-6mb.png`, `image-12mb.png`.
+     - C4–C5: `pdf-4mb.pdf`, `pdf-12mb.pdf`.
+     - C6: «Вызови read_text_file для "text-200k.txt" с maxChars 200000 и перечисли все строки MARKER-n с их кодами».
+   - **(5) Observe:** whether the tool call succeeded in the UI (expand the call to see the raw response and any error such as "response too large"), what the model answered, and whether the answer matches the answers file.
+   - **(6) Record:** fill the table (Probe | File | Bytes | Call OK? | Model saw content? | Code correct? | Notes), the model name, date and app build, then the C2 `Outcome:` line, and send it to the orchestrator.
+   - **(7) Restore (optional):** run the release DMG again, or move the backup app back.
+   - Privacy note: the probes are synthetic. Do not run the experiment on client folders.
+7. `README.md`: in the tools table, the `read_file` row says images (PNG/JPEG/GIF/WebP) come back as MCP image content.
+8. Run the gate commands and the Python unittest. Then **STOP**: the orchestrator pauses until the user's outcome line is recorded. Ф2 and Ф3 read it.
+
+## Ф2: Continuation, deterministic traversal, document tools, PDF text layer
+
+**Files in this phase:**
+- Create: `native/cursor.rs`, `native/walk.rs`, `native/documents.rs`, `native/pdf.rs`
+- Modify: `Cargo.toml`, `Cargo.lock`, `native/main.rs`, `native/filesystem.rs`, `native/mcp.rs`, `README.md`
+- Test: unit tests inside the four new modules; `test/native.test.mjs`
+
+**Interfaces:**
+- Consumes: Ф1 `mcp.rs::result()` mapping (C1). The Ф1 outcome `text_max` (C2) for `OUTPUT_LIMIT` calibration.
+- Produces: C3 (`pub(crate)` filesystem helpers, `RootDir::open_file(&self, &Path, u64) -> Result<(cap_std::fs::File, Fingerprint)>`); C4 (`Cursor`, `CursorKind`, `Fingerprint`, `request_hash`, `encode`, `decode`, `check_fingerprint`); C5 (`Walker::new(..)`, `WalkEvent`, `WalkEntry`); C6 (`Format`, `ImageFormat`, `format_of`, `Location`, `Source`, `Opened`, `open`, `Unit`, `TextDocument`, `open_text_document`, `read_document`, `inspect_document`, `fetch`, `DOC_DEFAULT_CHARS`); C7 (`PdfDocument::{load, page_count, page_id, page_text, page_images, page_info, metadata, document, into_document}`, `PageKind`, `PageInfo`, `PageText`, `PageImage`, `assess`, `page_ranges`, `PdfText`, `inspect`, PDF constants).
+
+Steps:
+1. `Cargo.toml`: `lopdf = { version = "0.45", default-features = false }`. Justification: MIT, ~12 M recent downloads, actively maintained (0.45.0, Sep 2026), pure Rust, bomb-safe `*_with_limit` APIs. `default-features = false` drops `rayon` and `chrono-clock`. Update `Cargo.lock` (`cargo build`). Do not use `cargo add` in a way that changes other entries.
+2. `native/filesystem.rs`:
+   - C3 visibility changes; `RootDir::open_file`; `read` reserves the exact capacity.
+   - `read_text_file` and the text path of `read_file` stream lines from `open_file(.., TEXT_READ_LIMIT)` via `BufReader::read_until(b'\n')`. Validate UTF-8 per line, so the whole file is still validated (`NOT_TEXT` semantics unchanged), and keep the existing output, range and `maxChars` semantics exactly.
+   - `get_file_info` adds `format`.
+   - Remove `"rtf"` from `is_text()` (raw RTF is not usable text; see Step 5). Plain-text `search_text` therefore no longer scans `.rtf`.
+   - The `NOT_TEXT` message now points to `read_document` for document formats.
+3. `native/cursor.rs`: C4.
+4. `native/walk.rs`: C5. Rewrite `Filesystem::list` and `Filesystem::search` on the `Walker`:
+   - Roots in config order; for `root=all` the cursor's first component is the root id (unknown id → `INVALID_CURSOR` "folder list changed; restart").
+   - Budgets: `WALK_LIMIT`, deadline, `SCAN_LIMIT`, result `limit`. The progress guarantee applies: at least one entry is processed per call.
+   - Responses keep every existing field and add `nextCursor` (Walk) when incomplete. `truncated` stays true whenever incomplete.
+   - `list` output is in pre-order (children follow their directory), sorted; a directory with more than `MAX_DIR_ENTRIES` entries is covered completely through C5's windowed frames.
+   - `Walker::new(.., include_resume_entry: false)` everywhere in Ф2.
+5. `native/documents.rs`: C6, with the `Text` and `Pdf` readers wired. All other formats return `UNSUPPORTED_FORMAT` from `read_document`/`inspect_document`. `read_file` delegates to `read_document` only when `format.has_text_reader()` and the format is not `Text`, so for still-unsupported formats `read_file` keeps its old binary-resource behavior. Exception, checked before that binary fallback: `read_file` on `Format::Heic` (HEIC/HEIF) or `Format::LegacyOffice` (`.doc/.ppt/.pptx/.odt/.ods/.rtf/.rar/.7z`) returns `UNSUPPORTED_FORMAT` with the C6 hint (HEIC: "convert to JPEG/PNG"; `.doc`, `.rtf` and other office formats: "save as DOCX or PDF"; RAR/7z: "extract it or repack as ZIP"). `.rtf` is `Format::LegacyOffice` (per Non-goals), so `read_file`, `read_document`, `inspect_document` and `fetch` return this error for it, and `read_text_file` on `.rtf` also returns it instead of raw RTF text. `Format::Other` keeps the binary fallback.
+6. `native/pdf.rs`: C7 (loader + filter, text walker, `assess`, `PdfText`, `inspect`, `page_ranges`).
+7. `native/filesystem.rs` dispatch: `"read_document"`, `"inspect_document"` (root canonicalization as for other tools; `RootDir` opened once). `fetch` → `documents::fetch`.
+8. `native/mcp.rs`:
+   - Schemas per C8 for the Ф2 items (`cursor` on list/search tools; the new tools with `startPage`/`endPage`).
+   - Descriptions:
+     - `read_document`: "Read text extracted from documents with source locations — PDF text layer page by page (marks OCR layers and pages without text), plain text. Long documents return nextCursor; pass it back to continue."
+     - `inspect_document`: "Structure of a document without reading all of it: PDF page count and which pages have a text layer, an OCR layer, no text (scans) or suspicious text."
+   - Instructions: replace "Prefer Markdown sidecars for PDF, DOCX and scans" with guidance to use `inspect_document`/`read_document`, follow `nextCursor`, cite file + page from the headings, and treat `ocr_layer` text as possibly erroneous.
+9. Calibrate `OUTPUT_LIMIT` from the Ф1 `text_max` per C0 "Calibration per outcome", and set `DOC_DEFAULT_CHARS = min(100 000, OUTPUT_LIMIT)`. If it is lowered, update the `maxChars` schema maximums and defaults so none exceeds `OUTPUT_LIMIT`.
+10. `README.md`:
+    - Tools table: 11 tools, cursors.
+    - "Лимиты" becomes a two-column table (on-disk vs per-response), with the Ф2 values.
+    - Rewrite the "OCR и конвертация документов в сервер не входят" paragraph: OCR is still not performed; PDFs with a text layer are now read directly with page numbers; scans and DOCX/XLSX/email arrive in later versions (adjusted again in Ф3–Ф5).
+11. Tests per the Ф2 test strategy, including the `#[ignore]` `large_pdf_budget` test and the binary-fixture migration in `test/native.test.mjs` (the Ф1 `sample.pdf` resource test becomes `sample.bin`; invalid PDF bytes → `DOCUMENT_INVALID` asserted separately), since from this phase on `.pdf` goes to the PDF reader and the Node gate would otherwise fail. Record the measured peak RSS and time in the phase report. Optional manual validation (metadata only), relative to root `work`:
+    - `Косицын/оригиналы/2026-06-05 Определение первой инстанции.pdf`
+    - `Аквамир/Аквамир-Монолитстрой/A33-10077-2025_20260212_Reshenie.pdf`
+    - `Корнеев (Эко-норма)/Судебный процесс/Иск/Договор займа.pdf` (expect `ocr_text`)
+    - `Корнеев/! Корнеев-Васнев иск об исключении участника/2026-02-27 Приобщение в суд/46 Договор целевого займа от 17.11.2025.pdf` (expect `suspicious`)
+    - `Командор/Анализ отчетов об оценке/Отчет ФинЭкспертиза/2875_26_Стройпрестиж_том_3.pdf` (330 MB: inspect time, RSS)
+
+## Ф3: Visual access per experiment branch
+
+**Files in this phase:**
+- Create: `native/pdf_page.rs`; `native/imaging.rs` (branches A, A+pdf, B only)
+- Modify: `Cargo.toml`, `Cargo.lock` (A, A+pdf, B), `native/main.rs`, `native/documents.rs`, `native/pdf.rs`, `native/filesystem.rs`, `native/mcp.rs`, `README.md`
+- Test: unit tests in `native/imaging.rs` and `native/pdf_page.rs`; `test/native.test.mjs`
+
+**Interfaces:**
+- Consumes: the C2 outcome (`A|A+pdf|B|C`, `image_max`, `pdf_max`). C1 `result()`. C6 `Source`, `Opened`, `open`, `Format`, `ImageFormat`. C7 `PdfDocument::load(&[u8], &HashSet<ObjectId>)`, `PdfDocument::page_images`, `page_id`, `page_info`, `into_document`.
+- Produces: C9 (`VisualChannel`, `VISUAL_CHANNEL`, `PageView`, `view_page`, `single_page_pdf`, `wrap_image_as_pdf`; `PagePaint`, `PdfDocument::page_paint` (A/A+pdf); `Region`, `parse_region`, `ViewImage`, `view_file`, `view_pixels`, `info`, image constants). `read_file` `page`/`region` parameters. Result kinds `image`, `binary` (page PDF) and `not_viewable`.
+
+Branch selection (from C2): **A** → `VISUAL_CHANNEL = Image`; **A+pdf** → `ImageWithPdfFallback` only when `page_pdf_limit(pdf_max) ≥ PAGE_PDF_MIN_USABLE` (C0 "Calibration per outcome"), otherwise built as **A**; **B** → `Pdf` only when `page_pdf_limit(pdf_max) ≥ PAGE_PDF_MIN_USABLE` (C0 "Calibration per outcome"), otherwise built as **C**; **C** → `None`. The implementer states the branch in the phase report.
+
+Steps:
+1. Dependencies (A, A+pdf, B):
+   - `image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }` (MIT/Apache-2.0, pure Rust via zune-jpeg/png/image-webp/tiff; no `rayon`, `avif` or `exr`).
+   - `tiff = "0.11"` (MIT; already pulled in by `image`; used directly only for TIFF pages > 1).
+   - `fax = "0.2"` (MIT; the same 0.2.6 that `tiff` already uses; CCITT G3/G4 decoding).
+   - Branch C adds **no** dependencies.
+2. `native/imaging.rs` (A, A+pdf, B): C9 imaging, `IMAGE_OUTPUT_LIMIT` calibrated per C0 "Calibration per outcome" (A/A+pdf from `image_max`; B from `branch_b_image_limit(PAGE_PDF_OUTPUT_LIMIT)`, i.e. `pdf_max` minus the measured wrapper overhead). HEIC is already `UNSUPPORTED_FORMAT` via `Format::Heic`.
+3. `native/pdf.rs`: extend `PageImage` (or add `pub(crate) fn image_stream(&self, id) -> Result<&lopdf::Stream>`) so `pdf_page.rs` can read the filters, `DecodeParms`, `ColorSpace`, `BitsPerComponent` and `Decode` of a kept image. Expose the inherited page `/Rotate`. A/A+pdf: add C9 `PagePaint`/`page_paint` on the existing content walker.
+4. `native/pdf_page.rs`: C9 page view.
+   - A: decodable images → `Image`; others → `NotViewable`.
+   - A+pdf: decodable → `Image`; others → `single_page_pdf`.
+   - B: every page → `single_page_pdf`; `region` on a PDF page → `INVALID_ARGUMENT` ("region is not available for PDF pages with this connector"); image files → `view_file` then `wrap_image_as_pdf` (one page sized to the image; JPEG as `/DCTDecode`, otherwise Flate RGB/Gray).
+   - C: only the branch-C C9 contract (`VisualChannel`, `VISUAL_CHANNEL`, `PageView::NotViewable`, `view_page(page)`); the PDF is never loaded for a view, and `read_file` returns `not_viewable` from it.
+   - `PAGE_PDF_OUTPUT_LIMIT` (A+pdf/B) is calibrated from `pdf_max` per C0. A+pdf/B: also `PAGE_PDF_MIN_USABLE` and `page_pdf_limit`; B: also `PDF_WRAP_OVERHEAD` and `branch_b_image_limit` (C9).
+5. `native/documents.rs`:
+   - `read_file` dispatch:
+     - Image formats → C9 view per channel, or `not_viewable` in C. Drop the Ф1 passthrough in `filesystem.rs`. `Format::Heic`/`Format::LegacyOffice` keep the Ф2 `UNSUPPORTED_FORMAT` rule ahead of any fallback.
+     - PDF with `page` → `view_page` / `not_viewable`.
+     - PDF without `page` → `read_document` (unchanged).
+     - `page` or `region` on other formats → `INVALID_ARGUMENT`.
+   - `inspect_document` for images: `info` (A/A+pdf/B), or `{format, size}` only (C).
+   - PDF unit headings and `inspect` output get a hint: "view with read_file page=N" (A/A+pdf/B), or "this connector cannot show page images; ask the user for a text copy" (C).
+6. `native/mcp.rs`:
+   - `read_file` schema adds `page`/`region` (A, A+pdf, B; in C add only `page`, documented as returning a not-viewable explanation).
+   - `summary()` also covers `not_viewable`.
+   - Instructions describe the channel's real behavior and the region zoom.
+7. `README.md`: the visual capabilities that are actually delivered (per branch), the image/page limits, and the HEIC note.
+8. Tests per the Ф3 test strategy for the chosen branch. Optional manual validation (metadata: kind of view returned, dims, bytes, ms), relative to root `work`:
+   - `Командор/2026-08-11 документы/Качинская/Протокол - рассмотр и утвержд инв плана на 2013 г.pdf` (jpeg)
+   - `Корнеев/! Корнеев-Васнев иск об исключении участника/2026-09-11 Васнев Дополнение к делу/2021-07-19 Банк «Авангард» Банковские выписки по переводам Корнееву.pdf` (jbig2)
+   - `EnerGo/Питер/04 Проектная документация и исходные данные/2024-11-13 Комитет по энергетике Распределение бюджетных обязательств на ПИР и СМР (PDF).pdf` (ccitt + jpeg)
+   - `Корнеев (Эко-норма)/Судебный процесс/2026-04-13 Ознакомление/2026-04-13 Ознакомление Корнеев-Васнев 4 часть-сжатый.pdf` (63 MB)
+   - `Сибэнергоавтоматика/.vassal/raw/intake-2026-04-22/Скриншот переписки от Директора про стадию соглашения и намерением оформить факторинг.png`
+   - the 3509×2481 JPEG `Корнеев/! Корнеев-Васнев иск об исключении участника/2026-05-05 заключение по расходам/Приложения к заключению специалиста Совлука В И от 22.03.2024/Приложения к заключению специалиста Совлука В И от 22.03.2024/Совлук В И Диплом горный инженер-геолог.jpg`
+   - optionally re-run probe A1 in real ChatGPT with a downscaled real image to confirm end to end.
+
+## Ф4: DOCX, XLSX/XLS, EML and MSG readers
+
+**Files in this phase:**
+- Create: `native/docx.rs`, `native/sheets.rs`, `native/email.rs`, `native/msg.rs`
+- Modify: `Cargo.toml`, `Cargo.lock`, `native/main.rs`, `native/documents.rs`, `native/mcp.rs`, `README.md`
+- Test: unit tests in the four new modules; `test/native.test.mjs`
+
+**Interfaces:**
+- Consumes: C6 `Source`, `Opened::into_bytes`, `TextDocument`, `Unit`, `open_text_document`, `Format`. C4 `Fingerprint` (through `Opened`).
+- Produces: C10 (`docx::open(Source) -> Result<DocxDocument>`, `sheets::open(Source, Format) -> Result<SheetDocument>`, `email::{Mail, AttachmentInfo, parse_eml(&[u8]) -> Result<Mail>, MailDocument, mail_document(Mail) -> MailDocument}`, `msg::parse_msg(Source) -> Result<Mail>`, limit constants, `documents::{ZIP_ENTRY_LIMIT, ZIP_RATIO_LIMIT}`). Ф5 relies on `AttachmentInfo` and the `Mail.attachments` indexes.
+
+Steps:
+1. Dependencies (all pure Rust; `cargo tree` checked at planning time: no `-sys`/C crates):
+   - `zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }` (MIT; 8.6 matches calamine's requirement, so there is no duplicate `zip` 9).
+   - `quick-xml = "0.41"` (MIT; the same version calamine 0.36.1 uses).
+   - `calamine = "0.36"` (MIT; XLSX + legacy BIFF XLS in one reader; default features off).
+   - `mail-parser = "0.11"` (Apache-2.0 OR MIT; native koi8-r/cp1251/ibm866 decoders, HTML→text).
+   - `cfb = "0.15"` (MIT; streaming CFB reader for MSG, also used to build test fixtures).
+   - `encoding_rs = "0.8"` (Apache-2.0 OR MIT, with a BSD-3-Clause data component; already a calamine dependency).
+   - `codepage = "0.1"` (Apache-2.0 OR MIT; already a calamine dependency).
+2. `native/docx.rs`: C10 DOCX, with `DOCX_LIMIT` checked against `Opened.size`.
+3. `native/sheets.rs`: C10 sheets (pre-check, bounded XLSX inflation into a Stored in-memory copy with `count`/`uniqueCount` stripped from `sharedStrings.xml`, the shared-string entry cap, XLSX/XLS range-extent pre-scan against `SHEET_CELL_LIMIT`, expanded-text and XLS per-`FORMULA` charge pre-scan against `SHEET_TEXT_LIMIT`, rejection of overlapping XLS sheet substreams, the XLS `Workbook` stream re-wrapped in an in-memory CFB for calamine, units, `sheet` via `unit_range`, inspect).
+4. `native/email.rs` and `native/msg.rs`: C10 mail. Large attachment streams are never read in Ф4 (only sizes).
+5. `native/documents.rs`: add `ZIP_ENTRY_LIMIT` and `ZIP_RATIO_LIMIT` (C10; used by `sheets.rs` now and `archive.rs` in Ф5). `has_text_reader` becomes true for Docx/Xlsx/Xls/Eml/Msg. Wire `open_text_document`, the inspect variants (DOCX summary, sheets list, mail headers + attachment list with `path` = `<display>::<index>` reserved for Ф5) and `fetch`. Plain-text `search_text` no longer treats `.eml` as raw text (`format_of` maps it to `Eml`). It is searched as a document in Ф5; until then `.eml` is not part of `search_text`. Note this in the README.
+6. `native/mcp.rs`: `read_document` gains `sheet`. Descriptions and instructions list DOCX (comments and tracked changes in CriticMarkup `{++ ++}`, `{-- --}`, `{== ==}[cN]`), XLSX/XLS (sheet + row locators) and EML/MSG.
+7. `README.md`: supported formats table and limits rows (DOCX/XLSX/XLS/EML/MSG).
+8. Tests per the Ф4 test strategy. **Mandatory review item — XLS memory bound:** the C10 XLS pre-scan (per-`FORMULA` charge and overlapping-substream rejection) must be verified with synthetic malicious samples against the real calamine 0.36.1, not only by unit assertions: an `#[ignore]` test `xls_formula_memory_budget` (`cargo test --release -- --ignored xls_formula_memory_budget`) builds, in a temp dir, XLS files that sit just under `SHEET_TEXT_LIMIT` with padded `FORMULA` records, maximal 3-D tokens and error formulas, plus one just over it and one with overlapping `BOUNDSHEET8` entries, and opens each through `sheets::open` (under-limit files read; the others fail before calamine opens). Peak RSS of the under-limit run is measured with `/usr/bin/time -l` (macOS), compared against the C0 per-call budget and recorded in the phase report; the phase reviewer checks this measurement, and exceeding the budget blocks the phase. Optional manual validation (metadata only: comment/insertion/deletion counts, sheet count, attachment count, charset decoded OK?), relative to root `work`:
+   - `ЗСК/Договорная работа/Агентский договор Альянс/2026-10-08 ЗСК Агентский договор Альянс с правками.docx` (expect 8 comments, 363 ins / 215 del, 7 tables)
+   - `ЗСК/Договорная работа/Атмосфера чистоты/2026-10-09 Редакция с правками/Рабочие материалы/правки-без-комментариев.docx`
+   - `Командор/2026 иск Чернов С.Н. - Стройпрестиж/2026-10-22 подгтовка к судебному заседанию/2026-10-16 Перечень имущества Стройпрестиж и Фирма Мастер.xlsx` (10 sheets)
+   - `Командор/2026-08-11 документы/Запрос юристы/Журнал операций СПЖ 2025.xls`
+   - both `.eml` files under `Сибэнергоавтоматика/Входящие документы/`
+
+## Ф5: Containers, search inside documents, release 2.2.0
+
+**Files in this phase:**
+- Create: `native/archive.rs`, `native/doc_search.rs`
+- Modify: `native/main.rs`, `native/documents.rs`, `native/email.rs`, `native/msg.rs`, `native/filesystem.rs`, `native/mcp.rs`, `Cargo.toml`, `Cargo.lock`, `docs/distribution-readme-windows.txt`, `scripts/verify-windows-distribution.py`, `README.md`
+- Test: unit tests in `native/archive.rs`, `native/doc_search.rs`, `native/email.rs`, `native/msg.rs`; `test/native.test.mjs`
+
+**Interfaces:**
+- Consumes: C4 `Cursor` (`Walk`, `Find`). C5 `Walker` (with `include_resume_entry`). C10 `documents::{ZIP_ENTRY_LIMIT, ZIP_RATIO_LIMIT}`. C6 `open`, `Opened`, `Source::Memory`, `TextDocument`, `open_text_document`, `Location.members`. C10 `parse_eml`, `parse_msg`, `AttachmentInfo`. C7/C9 readers through `open_text_document` and the `read_file` view dispatch.
+- Produces: nothing
+
+Steps:
+1. `native/archive.rs`: C11 archive functions. Use `ZipArchive::new(source)`, `len()`, `by_index(i)`, `name_raw()`, `size()`, `compressed_size()`, `is_dir()`, `encrypted()`, `compression()`, and read with `(&mut file).take(n)` (APIs verified against zip 8.6.0). Encrypted members are detected from the central-directory flag before `by_index`, which would fail with `PASSWORD_REQUIRED`.
+2. `native/email.rs` / `native/msg.rs`: `eml_attachment` (via `attachment(pos).contents()`; message/rfc822 parts return their raw bytes and get format `Eml`) and `msg_attachment` (stream `__substg1.0_37010102` read with `take(MEMBER_LIMIT + 1)`; embedded messages → `UNSUPPORTED_FORMAT` "embedded Outlook message").
+3. `native/documents.rs`:
+   - `open()` resolves the `::` chain per C11 (depth check, per-level format by name, `Source::Memory` for every level after the disk file, `Location.members` filled). Every reader and view now works on members.
+   - `read_document`/`inspect_document` on a ZIP → `inspect` summary `{entries, files, directories, totalUncompressed, unreadable}` plus the hint "use list_directory".
+4. `native/filesystem.rs`:
+   - `list_directory` on a container path → C11 container listing with cursor.
+   - `search_text`: document formats in folder mode, and single-document mode when the resolved `path` is a file or member (C11).
+   - The connector `search` inherits document hits through `search_text`.
+   - `search_files` does not descend into archives.
+5. `native/doc_search.rs`: C11. Snippets are built like today's (360 bytes before, 640 after, whitespace collapsed) on unit text, with the locator prefix.
+6. `native/mcp.rs`: descriptions — `list_directory` ("also lists ZIP members and e-mail attachments"), `search_text` ("also searches inside PDF, DOCX, XLSX/XLS, EML, MSG; pass a document path to get every match with page numbers"), `read_document`/`read_file` (`::` paths). Instructions: the `archive.zip::member` and `letter.eml::N` syntax, plus the cursor discipline for complete folder coverage.
+7. Release:
+   - `Cargo.toml` version `2.2.0` and the matching `Cargo.lock` `local-files` entry.
+   - `docs/distribution-readme-windows.txt` line 1 → `Strigov Local MCP 2.2.0`.
+   - `scripts/verify-windows-distribution.py`: the `app-version` record expects `Strigov Local MCP 2.2.0` (today the literal `2.1.2` at line 109), matching `local-files --version` of the release.
+   - `README.md`: final tools table; formats; on-disk vs response limits (C0); visual behavior per the recorded branch; the rewritten "OCR и конвертация" section (no OCR; scans are viewable only as the branch allows; text copies remain the user's choice); the "Безопасность → Лимиты" list updated; the line "Удалённый CI на коде 2.1.2 не запускался" left as is unless CI is rerun.
+8. Tests per the Ф5 test strategy, plus the full gate. Optional manual validation (metadata: member count, decoded names look Cyrillic yes/no, nested depth reached, TIFF view OK, search hit count/time), relative to root `work`:
+   - `Техномед/04_Судебный_комплект_2026-08-06/Судебный_комплект_к_подаче.zip` (25 members, CP866)
+   - `Сибэнергоавтоматика/.vassal/raw/intake-2026-04-22/Дополнительно направленные документы по соглашению по запросу от Струц от 16.07.2025.zip` (nested)
+   - `Аквамир/Аквамир-Монолитстрой/В суд/Устав Монолита/UD_c92ddeb0a453419da47458c170550a8f.zip` (38 TIFFs, viewable per branch)
+   - a cursor-driven `search_text` over the whole `work` root (calls needed, total time, no duplicates)
