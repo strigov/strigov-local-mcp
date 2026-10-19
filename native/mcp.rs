@@ -57,29 +57,29 @@ fn tools() -> Vec<Tool> {
         (
             "read_text_file",
             "Read text file",
-            "Read UTF-8 text or selected lines. Prefer Markdown/OCR sidecars for office documents.",
+            "Read UTF-8 text or selected lines. Use read_document for office documents and mail.",
             json!({"root":root,"path":text,"startLine":n(1,u32::MAX),"endLine":{"type":"integer","minimum":1},"maxChars":n(200000,200000)}),
             vec!["root", "path"],
         ),
         (
             "read_file",
             "Read file",
-            "Read UTF-8 text or PDF text with page locations and continuation. Select page to view a PDF or TIFF page. PNG/JPEG/GIF/WebP/TIFF/BMP and extractable scan pages return oriented images up to 2048 pixels; region fractions zoom into the oriented image. Composite or undecodable PDF pages return a single-page PDF resource. Continue document nextCursor with read_document.",
+            "Read UTF-8, PDF, DOCX, XLSX/XLS and EML/MSG text with source locations and continuation. Select page to view a PDF or TIFF page. PNG/JPEG/GIF/WebP/TIFF/BMP and extractable scan pages return oriented images up to 2048 pixels; region fractions zoom into the oriented image. Composite or undecodable PDF pages return a single-page PDF resource. Continue document nextCursor with read_document.",
             json!({"root":root,"path":text,"maxChars":n(200000,200000),"page":{"type":"integer","minimum":1,"maximum":1000000},"region":region}),
             vec!["root", "path"],
         ),
         (
             "inspect_document",
             "Inspect document",
-            "Structure of a document: PDF page count and text-layer classifications; image dimensions and TIFF page count. View a scan with read_file page=N.",
+            "Structure of a document: PDF page count and text-layer classifications; DOCX revision/comment counts; XLSX/XLS sheets; EML/MSG headers and attachment metadata; image dimensions and TIFF page count. View a scan with read_file page=N.",
             json!({"root":root,"path":text,"cursor":cursor}),
             vec!["root", "path"],
         ),
         (
             "read_document",
             "Read document",
-            "Read text extracted from documents with source locations — PDF text layer page by page (marks OCR layers and pages without text), plain text. Long documents return nextCursor; pass it back to continue.",
-            json!({"root":root,"path":text,"cursor":cursor,"maxChars":n(crate::documents::DOC_DEFAULT_CHARS as u32,crate::filesystem::OUTPUT_LIMIT as u32),"startPage":{"type":"integer","minimum":1,"maximum":1000000},"endPage":{"type":"integer","minimum":1,"maximum":1000000}}),
+            "Read text with source locations: PDF pages (marks OCR layers and scans), DOCX paragraphs/tables with CriticMarkup comments and tracked changes, XLSX/XLS cached values by sheet and row, EML/MSG headers and bodies, plain text. sheet selects one sheet by name or 1-based index. Long documents return nextCursor; pass it back to continue.",
+            json!({"root":root,"path":text,"cursor":cursor,"maxChars":n(crate::documents::DOC_DEFAULT_CHARS as u32,crate::filesystem::OUTPUT_LIMIT as u32),"startPage":{"type":"integer","minimum":1,"maximum":1000000},"endPage":{"type":"integer","minimum":1,"maximum":1000000},"sheet":{"type":"string","minLength":1,"maxLength":256}}),
             vec!["root", "path"],
         ),
         (
@@ -158,7 +158,7 @@ fn failure(code: &str, message: &str) -> CallToolResult {
 }
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Use inspect_document for PDF structure and read_document for PDF text with page locations. Follow nextCursor with the same sequence parameters for complete documents, listings and searches. Cite the file and page from source headings; ocr_layer text may contain recognition errors. OCR is not performed. DOCX still needs a text copy. View PDF scans with read_file page=N. Images (PNG/JPEG/GIF/WebP/TIFF/BMP) are oriented and downscaled to a 2048-pixel long side; use region {x,y,width,height} fractions of the oriented image to zoom. TIFF page selects a 1-based page. Single-image PDF scans (including JBIG2, JPX and CCITT) return image content. Composite pages or decoding failures use a single-page PDF fallback, never the whole PDF. ChatGPT asks the user Allow file materialization? for every embedded PDF resource; Allow once / Always allow applies only to this chat. When a PDF fallback is returned, tell the user to approve that prompt. Check unavailableRoots and truncated before claiming a complete search. For list_directory, search_files and search_text, also check skippedTooDeep: entries omitted because their own cursor position is too long; contents of an omitted directory are not visited or counted. Images and PDF page views include a text summary."})).expect("server config")
+        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Use inspect_document for PDF structure and read_document for PDF text with page locations. Follow nextCursor with the same sequence parameters for complete documents, listings and searches. Cite the file and page from source headings; ocr_layer text may contain recognition errors. OCR is not performed. Read DOCX paragraphs and table rows with tracked insertions {++ ++}, deletions {-- --}, and comments {== ==}[cN]; the Comments section identifies authors. XLSX/XLS return cached values with sheet and row locators; use sheet to select a name or 1-based index. EML/MSG expose headers, body paragraphs and attachment metadata; attachment contents cannot yet be opened. search_text currently excludes mail and other document formats. View PDF scans with read_file page=N. Images (PNG/JPEG/GIF/WebP/TIFF/BMP) are oriented and downscaled to a 2048-pixel long side; use region {x,y,width,height} fractions of the oriented image to zoom. TIFF page selects a 1-based page. Single-image PDF scans (including JBIG2, JPX and CCITT) return image content. Composite pages or decoding failures use a single-page PDF fallback, never the whole PDF. ChatGPT asks the user Allow file materialization? for every embedded PDF resource; Allow once / Always allow applies only to this chat. When a PDF fallback is returned, tell the user to approve that prompt. Check unavailableRoots and truncated before claiming a complete search. For list_directory, search_files and search_text, also check skippedTooDeep: entries omitted because their own cursor position is too long; contents of an omitted directory are not visited or counted. Images and PDF page views include a text summary."})).expect("server config")
     }
     async fn list_tools(
         &self,

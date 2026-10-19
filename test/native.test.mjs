@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm, rename, open } from 'node:fs/pr
 import path from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
-import { deflateSync } from 'node:zlib';
+import { deflateSync, crc32 } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -431,4 +431,144 @@ test('all-root cursors follow configuration order and reject a removed cursor ro
   assert.deepEqual(results.map(r=>r.root),[...Array(6).fill('work'),...Array(4).fill('cowork')]);
   f.config.roots=f.config.roots.filter(r=>r.id!=='work');await writeFile(f.configPath,JSON.stringify(f.config));
   assert.equal((await f.call('search_files',{...args,cursor:first})).structuredContent.error.code,'INVALID_CURSOR');
+});
+
+// Small synthetic office packages: STORED ZIP, no external converter or client data.
+function officeZip(parts) {
+  const local=[],central=[];let offset=0;
+  for(const [filename,body] of Object.entries(parts)) {
+    const name=Buffer.from(filename),data=Buffer.from(body),crc=crc32(data);
+    const header=Buffer.alloc(30);header.writeUInt32LE(0x04034b50);header.writeUInt16LE(20,4);header.writeUInt16LE(0x800,6);
+    header.writeUInt32LE(crc,14);header.writeUInt32LE(data.length,18);header.writeUInt32LE(data.length,22);header.writeUInt16LE(name.length,26);
+    local.push(header,name,data);
+    const directory=Buffer.alloc(46);directory.writeUInt32LE(0x02014b50);directory.writeUInt16LE(20,4);directory.writeUInt16LE(20,6);directory.writeUInt16LE(0x800,8);
+    directory.writeUInt32LE(crc,16);directory.writeUInt32LE(data.length,20);directory.writeUInt32LE(data.length,24);directory.writeUInt16LE(name.length,28);directory.writeUInt32LE(offset,42);
+    central.push(directory,name);offset+=header.length+name.length+data.length;
+  }
+  const directory=Buffer.concat(central),end=Buffer.alloc(22),count=Object.keys(parts).length;
+  end.writeUInt32LE(0x06054b50);end.writeUInt16LE(count,8);end.writeUInt16LE(count,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
+  return Buffer.concat([...local,directory,end]);
+}
+function syntheticDocx(text='Договор 😀 &amp; условия') {
+  return officeZip({
+    '_rels/.rels':'<Relationships><Relationship Type="x/officeDocument" Target="word/document.xml"/></Relationships>',
+    'word/_rels/document.xml.rels':'<Relationships><Relationship Type="x/comments" Target="comments.xml"/></Relationships>',
+    'word/document.xml':`<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>${text}</w:t></w:r><w:ins w:author="Автор"><w:r><w:t>новое</w:t></w:r></w:ins><w:del><w:r><w:delText>старое</w:delText></w:r></w:del><w:commentRangeStart w:id="1"/><w:r><w:t>проверить</w:t></w:r><w:commentRangeEnd w:id="1"/></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Цена</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>123</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>`,
+    'word/comments.xml':'<w:comments xmlns:w="w"><w:comment w:id="1" w:author="Юрист" w:date="2026-10-17T12:00:00Z"><w:p><w:r><w:t>Уточнить</w:t></w:r></w:p></w:comment></w:comments>'
+  });
+}
+function syntheticXlsx() {
+  const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  return officeZip({
+    '[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>',
+    '_rels/.rels':'<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+    'xl/workbook.xml':`<workbook xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Расчёт" sheetId="1" r:id="rId1"/><sheet name="Итог" sheetId="2" state="hidden" r:id="rId2"/></sheets></workbook>`,
+    'xl/_rels/workbook.xml.rels':'<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>',
+    'xl/sharedStrings.xml':`<sst xmlns="${ns}" count="1099511627776" uniqueCount="1099511627776"><si><t>Сумма</t></si></sst>`,
+    'xl/worksheets/sheet1.xml':`<worksheet xmlns="${ns}"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2"><v>123.5</v></c></row></sheetData></worksheet>`,
+    'xl/worksheets/sheet2.xml':`<worksheet xmlns="${ns}"><sheetData><row r="3"><c r="B3"><v>456</v></c></row></sheetData></worksheet>`
+  });
+}
+test('DOCX revisions, table rows, comments and Unicode cursor chains through MCP',async t=>{
+  const f=await fixture(t),name='synthetic.docx';
+  await writeFile(path.join(f.work,name),syntheticDocx('Договор 😀 &amp; условия '.repeat(60)));
+  const args={root:'work',path:name};
+  const info=(await f.call('inspect_document',args)).structuredContent;
+  assert.equal(info.paragraphs,3);assert.equal(info.tables,1);assert.equal(info.comments,1);assert.equal(info.insertions,1);assert.equal(info.deletions,1);
+  const full=(await f.call('read_document',args)).structuredContent;
+  assert.equal(full.unitName,'block');assert.match(full.text,/\{\+\+новое\+\+\}\{--старое--\}\{==проверить==\}\[c1\]/);
+  assert.match(full.text,/\[table 1, row 1\] \| Цена \| 123 \|/);assert.match(full.text,/\[c1\] Юрист \(2026-10-17\): Уточнить/);
+  const payloads=(doc)=>{
+    let chars=Array.from(doc.text.slice(doc.text.indexOf('\n')+1)),pos=0;
+    return doc.units.map((u,i)=>{
+      if(i)pos+=2;
+      if(u.comment && chars.slice(pos,pos+9).join('')==='Comments\n')pos+=9;
+      const value=chars.slice(pos,pos+u.chars).join('');pos+=u.chars;return value;
+    });
+  };
+  const expected=payloads(full),recovered=expected.map(()=>''),keys=full.units.map(u=>JSON.stringify([u.paragraph,u.table,u.row,u.comment]));
+  let cursor,calls=0;
+  do {
+    const r=await f.call('read_document',{...args,maxChars:140,...(cursor?{cursor}:{})});assert.equal(r.isError,undefined);
+    const doc=r.structuredContent,values=payloads(doc);assert.ok(Array.from(doc.text).length<=200000);
+    for(let i=0;i<doc.units.length;i++){const u=doc.units[i],key=JSON.stringify([u.paragraph,u.table,u.row,u.comment]);recovered[keys.indexOf(key)]+=values[i];}
+    cursor=doc.nextCursor;assert.equal(doc.truncated,Boolean(cursor));assert.ok(++calls<100);
+  }while(cursor);
+  assert.deepEqual(recovered,expected);
+  assert.equal((await f.call('read_file',args)).structuredContent.text,full.text);
+  assert.equal((await f.call('fetch',{id:`work:${name}`})).structuredContent.text,full.text);
+  const first=(await f.call('read_document',{...args,maxChars:100})).structuredContent;
+  await writeFile(path.join(f.work,name),syntheticDocx('изменён'));
+  assert.equal((await f.call('read_document',{...args,cursor:first.nextCursor})).structuredContent.error.code,'STALE_CURSOR');
+});
+test('XLSX cached rows, sheet selection and cursor request identity through MCP',async t=>{
+  const f=await fixture(t),args={root:'work',path:'synthetic.xlsx'};await writeFile(path.join(f.work,args.path),syntheticXlsx());
+  const schema=(await f.client.listTools()).tools.find(t=>t.name==='read_document').inputSchema;
+  assert.equal(schema.properties.sheet.type,'string');assert.equal(schema.properties.sheet.maxLength,256);
+  const inspection=await f.call('inspect_document',args);assert.equal(inspection.isError,undefined,JSON.stringify(inspection.structuredContent));
+  const info=inspection.structuredContent;assert.deepEqual(info.sheets.map(s=>[s.name,s.rows,s.columns,s.visible]),[['Расчёт',2,1,true],['Итог',1,1,false]]);
+  const all=(await f.call('read_file',args)).structuredContent;assert.equal(all.format,'xlsx');assert.equal(all.unitName,'row');assert.deepEqual(all.units.map(u=>[u.sheet,u.row]),[['Расчёт',1],['Расчёт',2],['Итог',3]]);assert.match(all.text,/2\t123.5/);
+  for(const sheet of ['2','Итог']) {const selected=(await f.call('read_document',{...args,sheet})).structuredContent;assert.deepEqual(selected.units.map(u=>[u.sheet,u.row]),[['Итог',3]]);assert.match(selected.text,/hidden/);assert.match(selected.text,/3\t456/);}
+  const first=(await f.call('read_document',{...args,sheet:'Расчёт',maxChars:1})).structuredContent;assert.ok(first.nextCursor);
+  assert.equal((await f.call('read_document',{...args,sheet:'Итог',cursor:first.nextCursor})).structuredContent.error.code,'INVALID_CURSOR');
+  const next=await f.call('read_document',{...args,sheet:'Расчёт',cursor:first.nextCursor,maxChars:200000});assert.equal(next.isError,undefined);assert.ok(next.structuredContent.units.every(u=>u.sheet==='Расчёт'));
+  assert.equal((await f.call('read_document',{...args,sheet:'missing'})).structuredContent.error.code,'INVALID_ARGUMENT');
+  assert.match((await f.call('fetch',{id:'work:synthetic.xlsx'})).structuredContent.text,/Сумма/);
+});
+test('EML headers, body, attachment provenance and exclusion from plain text search',async t=>{
+  const f=await fixture(t),args={root:'work',path:'synthetic.eml'};
+  const raw='Subject: =?windows-1251?Q?=CF=F0=E8=E2=E5=F2?=\r\nFrom: Sender <sender@example.test>\r\nTo: Reader <reader@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nEML_ONLY_NEEDLE Текст 😀\r\n\r\nВторой абзац\r\n--m\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=synthetic.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nAQID\r\n--m--\r\n';
+  await writeFile(path.join(f.work,args.path),raw);
+  const info=(await f.call('inspect_document',args)).structuredContent;assert.equal(info.subject,'Привет');assert.equal(info.bodySource,'text/plain');assert.equal(info.attachments[0].size,3);assert.equal(info.attachments[0].path,'work/synthetic.eml::1');
+  const doc=(await f.call('read_document',args)).structuredContent;assert.equal(doc.unitName,'part');assert.ok(doc.units.some(u=>u.part==='body'));assert.match(doc.text,/Второй абзац/);assert.match(doc.text,/synthetic.pdf/);
+  assert.equal((await f.call('read_file',args)).structuredContent.text,doc.text);assert.equal((await f.call('fetch',{id:'work:synthetic.eml'})).structuredContent.text,doc.text);
+  assert.equal((await f.call('search_text',{root:'work',query:'EML_ONLY_NEEDLE'})).structuredContent.results.length,0);
+  assert.equal((await f.call('get_file_info',args)).structuredContent.format,'eml');assert.ok(!JSON.stringify(info).includes(f.work));
+});
+test('EML multipart selections survive complete cursor chains without alternative duplicates',async t=>{
+  const f=await fixture(t);
+  const first='Первая часть 😀 '.repeat(20),second='Последняя часть 📝 '.repeat(20);
+  const mixed=`Subject: mixed\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${first}\r\n--m\r\nContent-Type: image/png\r\nContent-ID: <pixel>\r\nContent-Disposition: inline; filename=pixel.png\r\nContent-Transfer-Encoding: base64\r\n\r\nU0VDUkVUX0FUVEFDSE1FTlQ=\r\n--m\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${second}\r\n--m--\r\n`;
+  const alternative='MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n--a\r\nContent-Type: text/plain\r\n\r\nSAME_CONTENT\r\n--a\r\nContent-Type: text/html\r\n\r\n<p>SAME_CONTENT</p>\r\n--a--\r\n';
+  for(const [name,raw,expected] of [['mixed.eml',mixed,[first,second]],['alternative.eml',alternative,['SAME_CONTENT']]]) {
+    const args={root:'work',path:name};await writeFile(path.join(f.work,name),raw);
+    const full=(await f.call('read_document',args)).structuredContent;
+    assert.deepEqual(full.units.filter(u=>u.part==='body').map(u=>u.paragraph),expected.map((_,i)=>i+1));
+    const recovered=expected.map(()=>''),headings={headers:'Mail headers\n',body:'Mail body · text/plain\n',attachments:'Attachments (metadata only)\n'};
+    let cursor,calls=0;
+    do {
+      const r=await f.call('read_document',{...args,maxChars:80,...(cursor?{cursor}:{})});assert.equal(r.isError,undefined);
+      const doc=r.structuredContent,chars=Array.from(doc.text.slice(doc.text.indexOf('\n')+1));let pos=0;
+      for(let i=0;i<doc.units.length;i++) {
+        const u=doc.units[i];if(i)pos+=2;
+        const heading=Array.from(headings[u.part]||'');
+        if(chars.slice(pos,pos+heading.length).join('')===heading.join(''))pos+=heading.length;
+        const value=chars.slice(pos,pos+u.chars).join('');pos+=u.chars;
+        if(u.part==='body')recovered[u.paragraph-1]+=value;
+      }
+      assert.equal(pos,chars.length);cursor=doc.nextCursor;assert.equal(doc.truncated,Boolean(cursor));assert.ok(++calls<100);
+    }while(cursor);
+    assert.ok(calls>1);assert.deepEqual(recovered.map(s=>s.trim()),expected.map(s=>s.trim()));
+    assert.ok(!recovered.join('').includes('SECRET_ATTACHMENT'));
+    const info=(await f.call('inspect_document',args)).structuredContent;
+    assert.equal(info.attachments.length,name==='mixed.eml'?1:0);
+    if(name==='mixed.eml'){assert.equal(info.attachments[0].inline,true);assert.equal(info.attachments[0].path,'work/mixed.eml::1');}
+    else assert.equal(recovered.join('').split('SAME_CONTENT').length-1,1);
+  }
+});
+test('office and mail on-disk limits fail before parsing without disclosing host paths',async t=>{
+  const f=await fixture(t);
+  for(const [ext,mib] of [['docx',256],['xlsx',64],['xls',64],['eml',64],['msg',256]]) {
+    const name=`oversized.${ext}`,file=await open(path.join(f.work,name),'w');await file.truncate(mib*1024*1024+1);await file.close();
+    for(const tool of ['read_document','inspect_document','read_file']) {const result=await f.call(tool,{root:'work',path:name});assert.equal(result.structuredContent.error.code,'FILE_TOO_LARGE',`${tool} ${ext}`);assert.ok(!JSON.stringify(result).includes(f.work));}
+  }
+});
+test('truncated office containers fail explicitly and the MCP server remains usable',async t=>{
+  const f=await fixture(t);
+  for(const ext of ['docx','xlsx','xls','msg']) {
+    await writeFile(path.join(f.work,`broken.${ext}`),Buffer.from([0x50,0x4b,3,4]));
+    const result=await f.call('read_document',{root:'work',path:`broken.${ext}`});
+    assert.equal(result.isError,true);assert.equal(result.structuredContent.error.code,'DOCUMENT_INVALID');assert.ok(!JSON.stringify(result).includes(f.work));
+  }
+  assert.equal((await f.call('read_document',{root:'work',path:'Привет.md'})).structuredContent.format,'text');
 });
