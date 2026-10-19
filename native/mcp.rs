@@ -15,6 +15,9 @@ fn tools() -> Vec<Tool> {
     let text = json!({"type":"string","minLength":1,"maxLength":4096});
     let cursor = json!({"type":"string","minLength":1,"maxLength":2048});
     let n = |default: u32, max: u32| json!({"type":"integer","minimum":1,"maximum":max,"default":default});
+    let fraction = json!({"type":"number","minimum":0,"maximum":1});
+    let extent = json!({"type":"number","exclusiveMinimum":0,"maximum":1});
+    let region = json!({"type":"object","properties":{"x":fraction,"y":fraction,"width":extent,"height":extent},"required":["x","y","width","height"],"additionalProperties":false});
     let definitions = [
         (
             "list_roots",
@@ -61,14 +64,14 @@ fn tools() -> Vec<Tool> {
         (
             "read_file",
             "Read file",
-            "Read UTF-8 text or PDF text with page locations and continuation; PNG/JPEG/GIF/WebP images as MCP image content; other bounded binary files as an embedded resource. Continue document nextCursor with read_document.",
-            json!({"root":root,"path":text,"maxChars":n(200000,200000)}),
+            "Read UTF-8 text or PDF text with page locations and continuation. Select page to view a PDF or TIFF page. PNG/JPEG/GIF/WebP/TIFF/BMP and extractable scan pages return oriented images up to 2048 pixels; region fractions zoom into the oriented image. Composite or undecodable PDF pages return a single-page PDF resource. Continue document nextCursor with read_document.",
+            json!({"root":root,"path":text,"maxChars":n(200000,200000),"page":{"type":"integer","minimum":1,"maximum":1000000},"region":region}),
             vec!["root", "path"],
         ),
         (
             "inspect_document",
             "Inspect document",
-            "Structure of a document without reading all of it: PDF page count and which pages have a text layer, an OCR layer, no text (scans) or suspicious text.",
+            "Structure of a document: PDF page count and text-layer classifications; image dimensions and TIFF page count. View a scan with read_file page=N.",
             json!({"root":root,"path":text,"cursor":cursor}),
             vec!["root", "path"],
         ),
@@ -101,6 +104,17 @@ fn tools() -> Vec<Tool> {
     })).expect("static tool schema")).collect()
 }
 fn summary(data: &Value) -> String {
+    if data["kind"] == "not_viewable" {
+        return format!(
+            "{}: {}",
+            data["path"].as_str().unwrap_or("file"),
+            data["text"]
+                .as_str()
+                .unwrap_or("Page is not viewable; ask for a text copy")
+        )
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    }
     let mut text = format!(
         "{} ({}, {} bytes)",
         data["path"].as_str().unwrap_or("file"),
@@ -144,7 +158,7 @@ fn failure(code: &str, message: &str) -> CallToolResult {
 }
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Use inspect_document for PDF structure and read_document for PDF text with page locations. Follow nextCursor with the same sequence parameters for complete documents, listings and searches. Cite the file and page from source headings; ocr_layer text may contain recognition errors. OCR is not performed. DOCX and scans still need a text copy. Check unavailableRoots and truncated before claiming a complete search. For list_directory, search_files and search_text, also check skippedTooDeep: entries omitted because their own cursor position is too long; contents of an omitted directory are not visited or counted. PNG/JPEG/GIF/WebP images are returned as MCP image content with a text summary."})).expect("server config")
+        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Use inspect_document for PDF structure and read_document for PDF text with page locations. Follow nextCursor with the same sequence parameters for complete documents, listings and searches. Cite the file and page from source headings; ocr_layer text may contain recognition errors. OCR is not performed. DOCX still needs a text copy. View PDF scans with read_file page=N. Images (PNG/JPEG/GIF/WebP/TIFF/BMP) are oriented and downscaled to a 2048-pixel long side; use region {x,y,width,height} fractions of the oriented image to zoom. TIFF page selects a 1-based page. Single-image PDF scans (including JBIG2, JPX and CCITT) return image content. Composite pages or decoding failures use a single-page PDF fallback, never the whole PDF. ChatGPT asks the user Allow file materialization? for every embedded PDF resource; Allow once / Always allow applies only to this chat. When a PDF fallback is returned, tell the user to approve that prompt. Check unavailableRoots and truncated before claiming a complete search. For list_directory, search_files and search_text, also check skippedTooDeep: entries omitted because their own cursor position is too long; contents of an omitted directory are not visited or counted. Images and PDF page views include a text summary."})).expect("server config")
     }
     async fn list_tools(
         &self,

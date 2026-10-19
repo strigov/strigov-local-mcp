@@ -15,10 +15,11 @@ phases:
     commits: "9e60ace.."
   - id: Ф3
     scope: "Visual access chosen by the Ф1 outcome: images (orientation, downscale, region crop, TIFF pages) and PDF page views (embedded image or single-page PDF)"
-    status: in-progress
+    status: done
+    commits: "a1cd399.."
   - id: Ф4
     scope: "DOCX (tables, comments, tracked changes), XLSX/XLS, EML and MSG readers with provenance"
-    status: pending
+    status: in-progress
   - id: Ф5
     scope: "ZIP members and email attachments via '::' paths, bounded search inside documents, release 2.2.0"
     status: pending

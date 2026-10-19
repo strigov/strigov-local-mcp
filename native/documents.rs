@@ -3,7 +3,7 @@ use crate::{
     filesystem::{
         self, OUTPUT_LIMIT, Result, RootDir, TEXT_READ_LIMIT, error, io_error, number, string,
     },
-    pdf,
+    imaging, pdf, pdf_page,
 };
 use serde_json::{Value, json};
 use std::{
@@ -204,6 +204,7 @@ pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened> {
     let limit = match format {
         Format::Text => TEXT_READ_LIMIT,
         Format::Pdf => pdf::PDF_LIMIT,
+        Format::Image(_) => imaging::IMAGE_SOURCE_LIMIT,
         _ => u64::MAX,
     };
     let (file, fingerprint) = root.open_file(&real, limit)?;
@@ -509,6 +510,95 @@ pub(crate) fn read_document(root: &RootDir, root_id: &str, args: &Value) -> Resu
         Ok(result)
     })
 }
+pub(crate) fn read_file(root: &RootDir, root_id: &str, args: &Value) -> Result<Value> {
+    guarded(|| {
+        let mut opened = open(root, root_id, string(args, "path", None)?)?;
+        let page = if args.get("page").is_some() {
+            Some(number(args, "page", 1, 1_000_000)? as u32)
+        } else {
+            None
+        };
+        let region = imaging::parse_region(args)?;
+        let location = &opened.location;
+        let mut result = json!({"root":root_id,"path":location.display(),"id":location.id(),"uri":location.uri()});
+        let view = match opened.format {
+            Format::Image(format) => pdf_page::PageView::Image(imaging::view_file(
+                &mut opened.source,
+                format,
+                page,
+                region,
+            )?),
+            Format::Pdf => {
+                let Some(page) = page else {
+                    return read_document(root, root_id, args);
+                };
+                pdf_page::view_page(&opened.into_bytes(pdf::PDF_LIMIT)?, page, region)?
+            }
+            _ => {
+                return Err(error(
+                    "INVALID_ARGUMENT",
+                    "page and region are only available for images and PDF pages",
+                ));
+            }
+        };
+        match view {
+            pdf_page::PageView::Image(view) => {
+                use base64::Engine;
+                result["kind"] = json!("image");
+                result["mimeType"] = json!(view.mime);
+                result["size"] = json!(view.data.len());
+                result["data"] =
+                    json!(base64::engine::general_purpose::STANDARD.encode(&view.data));
+                result["width"] = json!(view.width);
+                result["height"] = json!(view.height);
+                result["sourceWidth"] = json!(view.source_width);
+                result["sourceHeight"] = json!(view.source_height);
+                result["passthrough"] = json!(view.passthrough);
+                if let Some(page) = view.page {
+                    result["page"] = json!(page);
+                }
+                if let Some(pages) = view.pages {
+                    result["pages"] = json!(pages);
+                }
+                if let Some(region) = view.region {
+                    result["region"] = json!(region);
+                }
+                result["note"] = json!(format!(
+                    "View from {}×{}; pass region {{x,y,width,height}} (fractions 0–1 of the oriented image) to zoom",
+                    view.source_width, view.source_height
+                ));
+            }
+            pdf_page::PageView::Pdf(data) => {
+                use base64::Engine;
+                result["kind"] = json!("binary");
+                result["mimeType"] = json!("application/pdf");
+                result["size"] = json!(data.len());
+                result["page"] = json!(page);
+                result["pageCount"] = json!(1);
+                result["uri"] = json!(format!(
+                    "{}#page={}",
+                    result["uri"].as_str().unwrap(),
+                    page.unwrap()
+                ));
+                result["blob"] = json!(base64::engine::general_purpose::STANDARD.encode(data));
+                result["note"] = json!(
+                    "Single-page PDF fallback; approve ChatGPT's Allow file materialization? prompt to view the page (approval applies only to this chat)"
+                );
+            }
+            pdf_page::PageView::NotViewable(reason) => {
+                result["kind"] = json!("not_viewable");
+                result["reason"] = json!(reason);
+                if let Some(page) = page {
+                    result["page"] = json!(page);
+                }
+                result["text"] = json!(
+                    "This page cannot be viewed by this connector; use inspect_document for its classification and ask the user for a text copy"
+                );
+            }
+        }
+        Ok(result)
+    })
+}
 pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> Result<Value> {
     guarded(|| {
         let deadline = call_deadline();
@@ -526,6 +616,16 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
                     ));
                 }
                 (PlainText::open(opened)?.summary(), None)
+            }
+            Format::Image(format) => {
+                if resume.is_some() {
+                    return Err(error(
+                        "INVALID_CURSOR",
+                        "Image inspection is complete in one call",
+                    ));
+                }
+                let mut opened = opened;
+                (imaging::info(&mut opened.source, format)?, None)
             }
             Format::Pdf => {
                 let from = resume

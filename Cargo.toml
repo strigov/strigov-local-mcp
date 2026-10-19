@@ -2,7 +2,7 @@
 name = "local-files"
 version = "2.1.2"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.92"
 description = "Native tray controller and read-only MCP filesystem server"
 license = "MIT"
 
@@ -16,6 +16,10 @@ base64 = "0.22"
 cap-std = "4.0.3"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 fs4 = "1.1"
+hayro-ccitt = { version = "0.4", default-features = false }
+hayro-jbig2 = { version = "0.3", default-features = false }
+hayro-jpeg2000 = { version = "0.4", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
 memchr = "2"
 libc = "0.2"
 lopdf = { version = "0.45", default-features = false }
@@ -25,7 +29,11 @@ rmcp = { version = "3.5.0", default-features = false, features = ["server", "tra
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+tiff = "0.11"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+fax = "0.2"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tao = { version = "0.35.3", default-features = false, features = ["rwh_06"], optional = true }
