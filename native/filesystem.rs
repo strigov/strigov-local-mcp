@@ -178,21 +178,7 @@ pub(crate) fn is_text(path: &Path) -> bool {
             | "yml"
     )
 }
-fn image_mime(path: &Path) -> Option<&'static str> {
-    match path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase()
-        .as_str()
-    {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
-}
+
 pub(crate) fn mime(path: &Path) -> &'static str {
     match path
         .extension()
@@ -460,6 +446,15 @@ impl Filesystem {
         {
             return Err(documents::unsupported(format, &display(&p)));
         }
+        if binary && matches!(format, Format::Image(_) | Format::Pdf) {
+            return documents::read_file(&root, id, args);
+        }
+        if binary && (args.get("page").is_some() || args.get("region").is_some()) {
+            return Err(error(
+                "INVALID_ARGUMENT",
+                "page and region are only available for images and PDF pages",
+            ));
+        }
         if binary && format.has_text_reader() && format != Format::Text {
             return documents::read_document(&root, id, args);
         }
@@ -467,11 +462,6 @@ impl Filesystem {
         if is_binary {
             let mut buf = Vec::new();
             root.read(&p, BINARY_LIMIT, &mut buf)?;
-            if let Some(mime_type) = image_mime(&p) {
-                return Ok(
-                    json!({"kind":"image","root":id,"path":public(id,&logical),"uri":uri(id,&logical),"mimeType":mime_type,"size":buf.len(),"data":base64::engine::general_purpose::STANDARD.encode(&buf)}),
-                );
-            }
             if std::str::from_utf8(&buf).is_err() {
                 return Ok(
                     json!({"kind":"binary","root":id,"path":public(id,&logical),"uri":uri(id,&logical),"mimeType":mime(&p),"size":buf.len(),"blob":base64::engine::general_purpose::STANDARD.encode(&buf)}),

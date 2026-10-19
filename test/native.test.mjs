@@ -84,15 +84,60 @@ test('read_file returns PNG image content with a text summary and bounded passth
   assert.equal(result.structuredContent.kind,'image');assert.equal(result.structuredContent.size,png.length);
   assert.equal(result.structuredContent.data,undefined);assert.equal(result.structuredContent.blob,undefined);
   assert.ok(!JSON.stringify(result).includes(f.work));
-  // Passthrough is extension-based, including when the bytes happen to be valid UTF-8.
-  for(const [ext,mimeType] of [['PNG','image/png'],['jpg','image/jpeg'],['jpeg','image/jpeg'],['gif','image/gif'],['webp','image/webp']]) {
-    await writeFile(path.join(f.work,`probe.${ext}`),'GIF89a');
-    const read=await f.call('read_file',{root:'work',path:`probe.${ext}`});
-    assert.deepEqual(read.content.find(c=>c.type==='image'),{type:'image',data:Buffer.from('GIF89a').toString('base64'),mimeType});
+  for(const ext of ['PNG','jpg','jpeg','gif','webp']) {
+    await writeFile(path.join(f.work,`invalid.${ext}`),'GIF89a');
+    const read=await f.call('read_file',{root:'work',path:`invalid.${ext}`});
+    assert.equal(read.structuredContent.error.code,'DOCUMENT_INVALID');
+    assert.equal(read.content.some(c=>c.type==='image'),false);
   }
-  await writeFile(path.join(f.work,'oversized.png'),Buffer.alloc(15*1024*1024+1));
+  const huge=await open(path.join(f.work,'oversized.png'),'w');await huge.truncate(128*1024*1024+1);await huge.close();
   assert.equal((await f.call('read_file',{root:'work',path:'oversized.png'})).structuredContent.error.code,'FILE_TOO_LARGE');
   assert.equal((await f.call('read_text_file',{root:'work',path:'pixel.png'})).structuredContent.error.code,'NOT_TEXT');
+});
+function syntheticPng(width,height) {
+  const crc=bytes=>{let c=0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^(0xedb88320&-(c&1));}return (c^0xffffffff)>>>0;};
+  const chunk=(type,bytes)=>{const name=Buffer.from(type),size=Buffer.alloc(4),check=Buffer.alloc(4);size.writeUInt32BE(bytes.length);check.writeUInt32BE(crc(Buffer.concat([name,bytes])));return Buffer.concat([size,name,bytes,check]);};
+  const head=Buffer.alloc(13);head.writeUInt32BE(width);head.writeUInt32BE(height,4);head[8]=8;
+  const pixels=Buffer.alloc((width+1)*height);
+  for(let y=0;y<height;y++)pixels.fill(255,y*(width+1)+1+Math.floor(width/2),(y+1)*(width+1));
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',head),chunk('IDAT',deflateSync(pixels)),chunk('IEND',Buffer.alloc(0))]);
+}
+test('visual A+pdf schema, image downscale, crop, inspection and argument bounds',async t=>{
+  const f=await fixture(t);const tool=(await f.client.listTools()).tools.find(t=>t.name==='read_file');
+  assert.equal(tool.inputSchema.additionalProperties,false);assert.equal(tool.inputSchema.properties.page.maximum,1000000);
+  assert.equal(tool.inputSchema.properties.region.additionalProperties,false);
+  await writeFile(path.join(f.work,'large.png'),syntheticPng(4096,1024));
+  const read=(await f.call('read_file',{root:'work',path:'large.png'}));
+  assert.equal(read.structuredContent.kind,'image');assert.equal(read.structuredContent.width,2048);assert.equal(read.structuredContent.height,512);
+  assert.equal(read.structuredContent.sourceWidth,4096);assert.equal(read.structuredContent.passthrough,false);
+  assert.ok(Buffer.from(read.content.find(c=>c.type==='image').data,'base64').length<=1494174);
+  const crop=(await f.call('read_file',{root:'work',path:'large.png',region:{x:0.75,y:0,width:0.25,height:1}})).structuredContent;
+  assert.equal(crop.width,1024);assert.equal(crop.height,1024);assert.equal(crop.region.x,0.75);
+  const info=(await f.call('inspect_document',{root:'work',path:'large.png'})).structuredContent;
+  assert.equal(info.width,4096);assert.equal(info.height,1024);assert.equal(info.pages,1);
+  for(const region of [{x:0.8,y:0,width:0.3,height:1},{x:0,y:0,width:0,height:1}])
+    assert.equal((await f.call('read_file',{root:'work',path:'large.png',region})).structuredContent.error.code,'INVALID_REGION');
+  assert.equal((await f.call('read_file',{root:'work',path:'large.png',page:2})).structuredContent.error.code,'PAGE_OUT_OF_RANGE');
+  for(const extra of [{page:1},{region:{x:0,y:0,width:1,height:1}}])
+    assert.equal((await f.call('read_file',{root:'work',path:'Привет.md',...extra})).structuredContent.error.code,'INVALID_ARGUMENT');
+  await writeFile(path.join(f.work,'scan.heic'),'synthetic');
+  assert.equal((await f.call('read_file',{root:'work',path:'scan.heic',page:1})).structuredContent.error.code,'UNSUPPORTED_FORMAT');
+});
+test('PDF page views prefer scan images and return one-page PDF fallback for visible text',async t=>{
+  const f=await fixture(t);await writeFile(path.join(f.work,'view.pdf'),syntheticPdf());
+  const scan=await f.call('read_file',{root:'work',path:'view.pdf',page:2});
+  assert.equal(scan.structuredContent.kind,'image');assert.equal(scan.structuredContent.page,2);assert.equal(scan.structuredContent.pages,2);
+  assert.equal(scan.structuredContent.width,1000);assert.ok(scan.content.some(c=>c.type==='image'));
+  const crop=(await f.call('read_file',{root:'work',path:'view.pdf',page:2,region:{x:0,y:0,width:0.5,height:1}})).structuredContent;
+  assert.equal(crop.width,500);assert.equal(crop.height,1000);
+  const fallback=await f.call('read_file',{root:'work',path:'view.pdf',page:1});
+  assert.equal(fallback.structuredContent.kind,'binary');assert.equal(fallback.structuredContent.page,1);assert.equal(fallback.structuredContent.pageCount,1);
+  assert.match(fallback.structuredContent.uri,/#page=1$/);assert.ok(fallback.structuredContent.size<=262137);
+  const pdf=Buffer.from(fallback.content.find(c=>c.type==='resource').resource.blob,'base64');
+  assert.equal(pdf.subarray(0,5).toString(),'%PDF-');assert.equal(fallback.structuredContent.blob,undefined);
+  assert.match(fallback.structuredContent.note,/Allow file materialization/);
+  assert.equal((await f.call('read_file',{root:'work',path:'view.pdf'})).structuredContent.kind,'document');
+  assert.equal((await f.call('read_file',{root:'work',path:'view.pdf',page:3})).structuredContent.error.code,'PAGE_OUT_OF_RANGE');
 });
 test('config revocation applies to the same live session and invalid config fails closed',async t=>{
   const f=await fixture(t);

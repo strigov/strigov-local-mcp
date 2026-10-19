@@ -4,8 +4,10 @@ mod connection;
 mod cursor;
 mod documents;
 mod filesystem;
+mod imaging;
 mod mcp;
 mod pdf;
+mod pdf_page;
 mod service;
 #[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "windows")))]
 mod tray;

@@ -50,6 +50,14 @@ pub(crate) struct PageText {
     pub undecodable: usize,
     pub content_too_large: bool,
 }
+#[derive(Default)]
+pub(crate) struct PagePaint {
+    pub images: Vec<ObjectId>,
+    pub inline_images: usize,
+    pub visible_text: bool,
+    pub vector_paint: bool,
+    pub clipped: bool,
+}
 pub(crate) struct PageImage {
     #[allow(dead_code)] // C7 image descriptor consumed in the next phase.
     pub id: ObjectId,
@@ -148,6 +156,7 @@ struct PageState<'a> {
     glyph_left: u64,
     since_check: u64,
     deadline: Option<Instant>,
+    paint: Option<PagePaint>,
     #[cfg(test)]
     counters: PageCounters,
 }
@@ -180,6 +189,7 @@ impl<'a> PageState<'a> {
             glyph_left: PDF_PAGE_GLYPH_LIMIT,
             since_check: 0,
             deadline,
+            paint: None,
             #[cfg(test)]
             counters: PageCounters::default(),
         }
@@ -738,7 +748,15 @@ impl PdfDocument {
             }
         };
         let mut text = PageText::default();
-        self.walk_text(&bytes, 0, 0, &mut TextState::default(), page, &mut text)?;
+        let paint = page.paint.as_ref().map(|_| PaintState::default());
+        self.walk_text(
+            &bytes,
+            0,
+            0,
+            (&mut TextState::default(), paint),
+            page,
+            &mut text,
+        )?;
         Ok(text)
     }
     fn page_within(
@@ -790,7 +808,7 @@ impl PdfDocument {
         bytes: &[u8],
         scope: usize,
         depth: usize,
-        state: &mut TextState,
+        states: (&mut TextState, Option<PaintState>),
         page_state: &mut PageState<'a>,
         out: &mut PageText,
     ) -> PageResult<()> {
@@ -802,10 +820,51 @@ impl PdfDocument {
         #[cfg(test)]
         CONTENT_DECODE_BYTES.with(|count| count.set(count.get() + bytes.len()));
         let content = Content::decode(bytes).map_err(|_| PageStop::Unextractable)?;
+        let (state, mut paint_state) = states;
+        // Text-only calls retain their original Vec<TextState> stack. Visual
+        // calls use one stack containing both states, with the same q limit.
         let mut stack = Vec::new();
+        let mut paint_stack = Vec::new();
+        let mut path = ClipPath::Empty;
+        let mut marked_clip = false;
         for op in content.operations {
             page_state.charge(1)?;
             let args = &op.operands;
+            if let Some(paint) = &mut paint_state {
+                let painted = page_state.paint.as_mut().expect("visual walk");
+                match op.operator.as_str() {
+                    "cm" => {
+                        if !paint_numbers(args).is_some_and(|m| paint.concat(m)) {
+                            painted.clipped = true;
+                        }
+                    }
+                    "re" => {
+                        path = if matches!(path, ClipPath::Empty) {
+                            paint_numbers(args)
+                                .and_then(|[x, y, w, h]| paint.clip_bounds([x, y, x + w, y + h]))
+                                .map(ClipPath::Rectangle)
+                                .unwrap_or(ClipPath::Other)
+                        } else {
+                            ClipPath::Other
+                        };
+                    }
+                    "m" | "l" | "c" | "v" | "y" | "h" => path = ClipPath::Other,
+                    "W" | "W*" => marked_clip = true,
+                    "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" => {
+                        if marked_clip {
+                            match path {
+                                ClipPath::Rectangle(rectangle) if op.operator == "n" => {
+                                    paint.intersect(rectangle)
+                                }
+                                _ => painted.clipped = true,
+                            }
+                        }
+                        path = ClipPath::Empty;
+                        marked_clip = false;
+                    }
+                    _ => {}
+                }
+            }
             match op.operator.as_str() {
                 "BT" => {
                     state.in_text = true;
@@ -823,13 +882,27 @@ impl PdfDocument {
                     }
                 }
                 "q" => {
-                    if stack.len() >= PDF_Q_DEPTH_LIMIT {
+                    let len = if paint_state.is_some() {
+                        paint_stack.len()
+                    } else {
+                        stack.len()
+                    };
+                    if len >= PDF_Q_DEPTH_LIMIT {
                         return Err(PageStop::Limit(PageLimit::Q));
                     }
-                    stack.push(*state);
+                    if let Some(paint) = paint_state {
+                        paint_stack.push((*state, paint));
+                    } else {
+                        stack.push(*state);
+                    }
                 }
                 "Q" => {
-                    if let Some(saved) = stack.pop() {
+                    if paint_state.is_some() {
+                        if let Some((text, paint)) = paint_stack.pop() {
+                            *state = text;
+                            paint_state = Some(paint);
+                        }
+                    } else if let Some(saved) = stack.pop() {
                         *state = saved;
                     }
                 }
@@ -876,8 +949,65 @@ impl PdfDocument {
                         }
                     }
                 }
-                "Do" if depth < 3 => {
-                    if let Some(Ok(name)) = args.first().map(Object::as_name)
+                "BI" => {
+                    if let Some(paint) = &mut page_state.paint {
+                        paint.inline_images += 1;
+                    }
+                }
+                "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "sh" => {
+                    if let Some(paint) = &mut page_state.paint {
+                        paint.vector_paint = true;
+                    }
+                }
+                "Do" => {
+                    let mut form_paint = paint_state;
+                    // Only the visual walk resolves image Do operators. Text extraction's
+                    // lookup/cache behavior and budgets are unchanged.
+                    if page_state.paint.is_some() {
+                        let mut painted = None;
+                        if let Some(Ok(name)) = args.first().map(Object::as_name)
+                            && let Some(dict) = page_state.xobjects(scope)?
+                        {
+                            page_state.lookup()?;
+                            if let Ok(obj) = dict.get(name) {
+                                painted = page_state.deref(obj, 128)?;
+                            }
+                        }
+                        match painted {
+                            Some((Some(id), Object::Stream(stream)))
+                                if stream.dict.get(b"Subtype").and_then(Object::as_name).ok()
+                                    == Some(b"Image") =>
+                            {
+                                let paint = page_state.paint.as_mut().unwrap();
+                                paint.images.push(id);
+                                if paint_state.is_some_and(|state| !state.contains_image()) {
+                                    paint.clipped = true;
+                                }
+                                continue;
+                            }
+                            Some((_, Object::Stream(stream)))
+                                if depth < 3
+                                    && stream
+                                        .dict
+                                        .get(b"Subtype")
+                                        .and_then(Object::as_name)
+                                        .ok()
+                                        == Some(b"Form") =>
+                            {
+                                if let Some(paint) = &mut form_paint
+                                    && paint.enter_form(&self.doc, &stream.dict).is_none()
+                                {
+                                    page_state.paint.as_mut().unwrap().clipped = true;
+                                }
+                            }
+                            _ => {
+                                page_state.paint.as_mut().unwrap().vector_paint = true;
+                                continue;
+                            }
+                        }
+                    }
+                    if depth < 3
+                        && let Some(Ok(name)) = args.first().map(Object::as_name)
                         && let Some((stream, form_scope)) = page_state.form(scope, name)?
                     {
                         let bytes =
@@ -896,7 +1026,7 @@ impl PdfDocument {
                             &bytes,
                             form_scope,
                             depth + 1,
-                            &mut form_state,
+                            (&mut form_state, form_paint),
                             page_state,
                             out,
                         )?;
@@ -906,6 +1036,60 @@ impl PdfDocument {
             }
         }
         Ok(())
+    }
+    pub(crate) fn page_paint(&self, page: u32) -> Result<PagePaint> {
+        let id = self.page_id(page)?;
+        let mut state = PageState::new(&self.doc, None);
+        state.paint = Some(PagePaint::default());
+        let result = (|| -> PageResult<PageText> {
+            // lopdf get_page_resources omits direct dictionaries on ancestors.
+            // Resolve them for visual access without altering the Ф2 text walk.
+            let mut current = id;
+            for depth in 0..128 {
+                state.lookup()?;
+                let dict = self.doc.get_dictionary(current).map_err(invalid)?;
+                if let Ok(value) = dict.get(b"Resources")
+                    && let Some((_, Object::Dictionary(resources))) = state.deref(value, 128)?
+                {
+                    state.scopes[0].push(resources);
+                }
+                let Ok(parent) = dict.get(b"Parent").and_then(Object::as_reference) else {
+                    return self.extract_text(id, &mut state);
+                };
+                if depth == 127 {
+                    return Err(PageStop::Unextractable);
+                }
+                current = parent;
+            }
+            unreachable!()
+        })();
+        match result {
+            Ok(text) => state.paint.as_mut().unwrap().visible_text = text.visible_chars > 0,
+            Err(PageStop::Invalid(e)) => return Err(e),
+            // A budget, malformed content or a deeper form makes partial extraction unsafe.
+            Err(_) => state.paint.as_mut().unwrap().vector_paint = true,
+        }
+        Ok(state.paint.take().unwrap())
+    }
+    pub(crate) fn image_stream(&self, id: ObjectId) -> Result<&lopdf::Stream> {
+        self.doc
+            .get_object(id)
+            .and_then(Object::as_stream)
+            .map_err(invalid)
+    }
+    pub(crate) fn page_attribute(&self, page: u32, key: &[u8]) -> Result<Option<Object>> {
+        let mut id = self.page_id(page)?;
+        for _ in 0..128 {
+            let dict = self.doc.get_dictionary(id).map_err(invalid)?;
+            if let Ok(value) = dict.get(key) {
+                return Ok(Some(value.clone()));
+            }
+            let Ok(parent) = dict.get(b"Parent").and_then(Object::as_reference) else {
+                return Ok(None);
+            };
+            id = parent;
+        }
+        Err(error("DOCUMENT_INVALID", "Invalid page inheritance"))
     }
     #[allow(dead_code)] // C7 standalone API; MCP uses page_info_within.
     pub(crate) fn page_images(&self, page: u32) -> Result<Vec<PageImage>> {
@@ -1031,6 +1215,131 @@ struct TextState {
     y: Option<f32>,
 }
 const _: () = assert!(std::mem::size_of::<TextState>() <= 32);
+#[derive(Clone, Copy)]
+struct PaintState {
+    ctm: [f64; 6],
+    clip: Option<[f64; 4]>,
+}
+impl Default for PaintState {
+    fn default() -> Self {
+        Self {
+            ctm: [1., 0., 0., 1., 0., 0.],
+            clip: None,
+        }
+    }
+}
+fn paint_numbers<const N: usize>(objects: &[Object]) -> Option<[f64; N]> {
+    if objects.len() != N {
+        return None;
+    }
+    let mut values = [0.; N];
+    for (value, object) in values.iter_mut().zip(objects) {
+        *value = match object {
+            Object::Integer(n) => *n as f64,
+            Object::Real(n) => f64::from(*n),
+            _ => return None,
+        };
+        if !value.is_finite() {
+            return None;
+        }
+    }
+    Some(values)
+}
+impl PaintState {
+    fn concat(&mut self, [a, b, c, d, e, f]: [f64; 6]) -> bool {
+        let [g, h, i, j, k, l] = self.ctm;
+        // ISO 32000-1 8.3.4: incoming M × current CTM (row-vector notation).
+        self.ctm = [
+            a * g + b * i,
+            a * h + b * j,
+            c * g + d * i,
+            c * h + d * j,
+            e * g + f * i + k,
+            e * h + f * j + l,
+        ];
+        self.ctm.iter().all(|v| v.is_finite())
+    }
+    fn bounds(&self, [x0, y0, x1, y1]: [f64; 4]) -> Option<[f64; 4]> {
+        if !self
+            .ctm
+            .iter()
+            .chain([x0, y0, x1, y1].iter())
+            .all(|v| v.is_finite())
+        {
+            return None;
+        }
+        let [a, b, c, d, e, f] = self.ctm;
+        let mut bounds = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for (x, y) in [(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
+            let (x, y) = (a * x + c * y + e, b * x + d * y + f);
+            if !x.is_finite() || !y.is_finite() {
+                return None;
+            }
+            bounds = [
+                bounds[0].min(x),
+                bounds[1].min(y),
+                bounds[2].max(x),
+                bounds[3].max(y),
+            ];
+        }
+        Some(bounds)
+    }
+    fn clip_bounds(&self, rectangle: [f64; 4]) -> Option<[f64; 4]> {
+        let [a, b, c, d, _, _] = self.ctm;
+        if !(b == 0. && c == 0. || a == 0. && d == 0.) {
+            return None;
+        }
+        self.bounds(rectangle)
+    }
+    fn intersect(&mut self, rectangle: [f64; 4]) {
+        self.clip = Some(match self.clip {
+            None => rectangle,
+            Some(clip) => [
+                clip[0].max(rectangle[0]),
+                clip[1].max(rectangle[1]),
+                clip[2].min(rectangle[2]),
+                clip[3].min(rectangle[3]),
+            ],
+        });
+    }
+    fn contains_image(&self) -> bool {
+        let Some([ix0, iy0, ix1, iy1]) = self.bounds([0., 0., 1., 1.]) else {
+            return false;
+        };
+        self.clip.is_none_or(|[x0, y0, x1, y1]| {
+            ix0 >= x0 - 0.5 && iy0 >= y0 - 0.5 && ix1 <= x1 + 0.5 && iy1 <= y1 + 0.5
+        })
+    }
+    fn enter_form(&mut self, doc: &Document, dict: &Dictionary) -> Option<()> {
+        let matrix = match dict.get(b"Matrix") {
+            Ok(object) => paint_numbers(doc.dereference(object).ok()?.1.as_array().ok()?)?,
+            Err(_) => Self::default().ctm,
+        };
+        let bbox = paint_numbers(
+            doc.dereference(dict.get(b"BBox").ok()?)
+                .ok()?
+                .1
+                .as_array()
+                .ok()?,
+        )?;
+        self.concat(matrix).then_some(())?;
+        let rectangle = self.clip_bounds(bbox)?;
+        self.intersect(rectangle);
+        Some(())
+    }
+}
+#[derive(Default)]
+enum ClipPath {
+    #[default]
+    Empty,
+    Rectangle([f64; 4]),
+    Other,
+}
 fn newline(text: &mut String) {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
@@ -1247,6 +1556,7 @@ impl TextDocument for PdfText {
             heading.push_str(&format!(" · suspicious: {reason}"));
             locator["suspicious"] = json!(reason);
         }
+        heading.push_str(&format!(" · view with read_file page={}", info.page));
         Ok(Some(Unit {
             locator,
             heading: Some(heading),
@@ -1304,6 +1614,7 @@ pub(crate) fn inspect(
     }
     let mut result = pdf.metadata();
     result["pageCount"] = json!(pdf.page_count());
+    result["viewHint"] = json!("view with read_file page=N");
     result["pages"] = json!(
         kinds
             .into_iter()
