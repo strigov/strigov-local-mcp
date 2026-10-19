@@ -13,6 +13,7 @@ fn tools() -> Vec<Tool> {
     let root = json!({"type":"string","description":"Folder name (nickname) or stable id returned by list_roots"});
     let path = json!({"type":"string","default":"","description":"Relative path inside the selected folder"});
     let text = json!({"type":"string","minLength":1,"maxLength":4096});
+    let cursor = json!({"type":"string","minLength":1,"maxLength":2048});
     let n = |default: u32, max: u32| json!({"type":"integer","minimum":1,"maximum":max,"default":default});
     let definitions = [
         (
@@ -25,8 +26,8 @@ fn tools() -> Vec<Tool> {
         (
             "list_directory",
             "List directory",
-            "List files and subdirectories within a configured folder.",
-            json!({"root":root,"path":path,"depth":n(1,5),"limit":n(500,2000)}),
+            "List files and subdirectories in sorted pre-order. Pass nextCursor back to continue.",
+            json!({"root":root,"path":path,"depth":n(1,5),"limit":n(500,2000),"cursor":cursor}),
             vec!["root"],
         ),
         (
@@ -39,15 +40,15 @@ fn tools() -> Vec<Tool> {
         (
             "search_files",
             "Search file names",
-            "Case-insensitive filename search. Use root=all to search all connected folders.",
-            json!({"root":{"type":"string","default":"all"},"path":path,"query":text,"limit":n(50,200)}),
+            "Case-insensitive filename search in sorted order. Use root=all for all folders; follow nextCursor for complete coverage.",
+            json!({"root":{"type":"string","default":"all"},"path":path,"query":text,"limit":n(50,200),"cursor":cursor}),
             vec!["query"],
         ),
         (
             "search_text",
             "Search inside text files",
-            "Unicode case-insensitive search in UTF-8 text. Narrow root/path for large folders. Reports offline roots and incomplete scans.",
-            json!({"root":{"type":"string","default":"all"},"path":path,"query":{"type":"string","minLength":2,"maxLength":4096},"limit":n(30,100)}),
+            "Unicode case-insensitive search in UTF-8 text. Narrow root/path for large folders. Reports offline roots and incomplete scans; pass nextCursor back to continue in sorted order.",
+            json!({"root":{"type":"string","default":"all"},"path":path,"query":{"type":"string","minLength":2,"maxLength":4096},"limit":n(30,100),"cursor":cursor}),
             vec!["query"],
         ),
         (
@@ -60,8 +61,22 @@ fn tools() -> Vec<Tool> {
         (
             "read_file",
             "Read file",
-            "Read UTF-8 text; PNG/JPEG/GIF/WebP images as MCP image content; other bounded binary files as an embedded resource.",
+            "Read UTF-8 text or PDF text with page locations and continuation; PNG/JPEG/GIF/WebP images as MCP image content; other bounded binary files as an embedded resource. Continue document nextCursor with read_document.",
             json!({"root":root,"path":text,"maxChars":n(200000,200000)}),
+            vec!["root", "path"],
+        ),
+        (
+            "inspect_document",
+            "Inspect document",
+            "Structure of a document without reading all of it: PDF page count and which pages have a text layer, an OCR layer, no text (scans) or suspicious text.",
+            json!({"root":root,"path":text,"cursor":cursor}),
+            vec!["root", "path"],
+        ),
+        (
+            "read_document",
+            "Read document",
+            "Read text extracted from documents with source locations — PDF text layer page by page (marks OCR layers and pages without text), plain text. Long documents return nextCursor; pass it back to continue.",
+            json!({"root":root,"path":text,"cursor":cursor,"maxChars":n(crate::documents::DOC_DEFAULT_CHARS as u32,crate::filesystem::OUTPUT_LIMIT as u32),"startPage":{"type":"integer","minimum":1,"maximum":1000000},"endPage":{"type":"integer","minimum":1,"maximum":1000000}}),
             vec!["root", "path"],
         ),
         (
@@ -74,7 +89,7 @@ fn tools() -> Vec<Tool> {
         (
             "fetch",
             "Fetch local document",
-            "Read a document returned by search using its stable root:path ID.",
+            "Read a document returned by search using its stable root:path ID. Continue metadata.nextCursor with read_document.",
             json!({"id":text}),
             vec!["id"],
         ),
@@ -129,7 +144,7 @@ fn failure(code: &str, message: &str) -> CallToolResult {
 }
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Prefer Markdown sidecars for PDF, DOCX and scans. Check unavailableRoots and truncated before claiming a complete search. PNG/JPEG/GIF/WebP images are returned as MCP image content with a text summary."})).expect("server config")
+        serde_json::from_value(json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"strigov-local-mcp","title":"Strigov Local MCP","version":env!("CARGO_PKG_VERSION")},"instructions":"Read-only access to explicitly configured local document folders. Start with list_roots; use relative paths and stable folder aliases. Never claim a write succeeded. Use inspect_document for PDF structure and read_document for PDF text with page locations. Follow nextCursor with the same sequence parameters for complete documents, listings and searches. Cite the file and page from source headings; ocr_layer text may contain recognition errors. OCR is not performed. DOCX and scans still need a text copy. Check unavailableRoots and truncated before claiming a complete search. For list_directory, search_files and search_text, also check skippedTooDeep: entries omitted because their own cursor position is too long; contents of an omitted directory are not visited or counted. PNG/JPEG/GIF/WebP images are returned as MCP image content with a text summary."})).expect("server config")
     }
     async fn list_tools(
         &self,
