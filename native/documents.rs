@@ -1,9 +1,10 @@
 use crate::{
     cursor::{self, Cursor, CursorKind, Fingerprint},
+    docx, email,
     filesystem::{
         self, OUTPUT_LIMIT, Result, RootDir, TEXT_READ_LIMIT, error, io_error, number, string,
     },
-    imaging, pdf, pdf_page,
+    imaging, msg, pdf, pdf_page, sheets,
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +19,8 @@ pub(crate) const DOC_DEFAULT_CHARS: usize = if OUTPUT_LIMIT < 100_000 {
 } else {
     100_000
 };
+pub(crate) const ZIP_ENTRY_LIMIT: usize = 20_000;
+pub(crate) const ZIP_RATIO_LIMIT: u64 = 200;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ImageFormat {
     Png,
@@ -95,7 +98,10 @@ impl Format {
         }
     }
     pub(crate) fn has_text_reader(self) -> bool {
-        matches!(self, Self::Text | Self::Pdf)
+        matches!(
+            self,
+            Self::Text | Self::Pdf | Self::Docx | Self::Xlsx | Self::Xls | Self::Eml | Self::Msg
+        )
     }
 }
 pub(crate) fn unsupported(format: Format, name: &str) -> filesystem::FsError {
@@ -149,8 +155,6 @@ impl Location {
 }
 pub(crate) enum Source {
     File(BufReader<cap_std::fs::File>),
-    // Contract for in-memory readers and future container members (C6).
-    #[allow(dead_code)]
     Memory(std::io::Cursor<Vec<u8>>),
 }
 impl Read for Source {
@@ -204,6 +208,10 @@ pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened> {
     let limit = match format {
         Format::Text => TEXT_READ_LIMIT,
         Format::Pdf => pdf::PDF_LIMIT,
+        Format::Docx => docx::DOCX_LIMIT,
+        Format::Xlsx | Format::Xls => sheets::SHEET_LIMIT,
+        Format::Eml => email::EML_LIMIT,
+        Format::Msg => msg::MSG_LIMIT,
         Format::Image(_) => imaging::IMAGE_SOURCE_LIMIT,
         _ => u64::MAX,
     };
@@ -329,6 +337,33 @@ pub(crate) fn open_text_document(opened: Opened, args: &Value) -> Result<Box<dyn
             &opened.into_bytes(pdf::PDF_LIMIT)?,
             args,
         )?) as Box<dyn TextDocument>),
+        Format::Docx => {
+            if opened.size > docx::DOCX_LIMIT {
+                return Err(error("FILE_TOO_LARGE", "DOCX exceeds 256 MiB"));
+            }
+            Ok(Box::new(docx::open(opened.source)?) as Box<dyn TextDocument>)
+        }
+        Format::Xlsx | Format::Xls => {
+            if opened.size > sheets::SHEET_LIMIT {
+                return Err(error("FILE_TOO_LARGE", "Spreadsheet exceeds 64 MiB"));
+            }
+            Ok(Box::new(sheets::open(opened.source, opened.format)?) as Box<dyn TextDocument>)
+        }
+        Format::Eml => {
+            let bytes = opened.into_bytes(email::EML_LIMIT)?;
+            let mail = email::parse_eml(&bytes)?;
+            drop(bytes);
+            Ok(Box::new(email::mail_document(mail)) as Box<dyn TextDocument>)
+        }
+        Format::Msg => {
+            if opened.size > msg::MSG_LIMIT {
+                return Err(error("FILE_TOO_LARGE", "MSG exceeds 256 MiB"));
+            }
+            Ok(
+                Box::new(email::mail_document(msg::parse_msg(opened.source)?))
+                    as Box<dyn TextDocument>,
+            )
+        }
         _ => Err(unsupported(opened.format, &opened.name)),
     })
 }
@@ -345,13 +380,14 @@ fn sequence_hash(tool: &str, location: &Location, args: &Value) -> u64 {
         .get("endPage")
         .map(Value::to_string)
         .unwrap_or_default();
+    let sheet = args.get("sheet").map(Value::to_string).unwrap_or_default();
     cursor::request_hash(&[
         tool,
         &location.root,
         &filesystem::display(&location.disk),
         &start,
         &end,
-        "",
+        &sheet,
     ])
 }
 fn continuation(
@@ -498,6 +534,7 @@ pub(crate) fn read_document(root: &RootDir, root_id: &str, args: &Value) -> Resu
         if let Value::Object(summary) = doc.summary() {
             result.as_object_mut().unwrap().extend(summary);
         }
+        attachment_paths(&mut result, &location.display());
         if u < range.end {
             result["nextCursor"] = json!(cursor::encode(&position(
                 CursorKind::Doc,
@@ -640,12 +677,23 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
                     .unwrap_or(1);
                 pdf::inspect(&opened.into_bytes(pdf::PDF_LIMIT)?, from, deadline)?
             }
+            Format::Docx | Format::Xlsx | Format::Xls | Format::Eml | Format::Msg => {
+                if resume.is_some() {
+                    return Err(error(
+                        "INVALID_CURSOR",
+                        "Document inspection is complete in one call",
+                    ));
+                }
+                (open_text_document(opened, args)?.summary(), None)
+            }
             _ => return Err(unsupported(opened.format, &opened.name)),
         };
         result
             .as_object_mut()
             .unwrap()
             .extend(summary.as_object().unwrap().clone());
+        let display = result["path"].as_str().unwrap().to_owned();
+        attachment_paths(&mut result, &display);
         if let Some(page) = next {
             result["nextCursor"] = json!(cursor::encode(&position(
                 CursorKind::Inspect,
@@ -657,6 +705,13 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
         }
         Ok(result)
     })
+}
+fn attachment_paths(value: &mut Value, display: &str) {
+    if let Some(attachments) = value.get_mut("attachments").and_then(Value::as_array_mut) {
+        for attachment in attachments {
+            attachment["path"] = json!(format!("{display}::{}", attachment["index"]));
+        }
+    }
 }
 pub(crate) fn fetch(root: &RootDir, root_id: &str, raw_path: &str, id: &str) -> Result<Value> {
     let doc = read_document(

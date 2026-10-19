@@ -3,12 +3,16 @@ mod config;
 mod connection;
 mod cursor;
 mod documents;
+mod docx;
+mod email;
 mod filesystem;
 mod imaging;
 mod mcp;
+mod msg;
 mod pdf;
 mod pdf_page;
 mod service;
+mod sheets;
 #[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "windows")))]
 mod tray;
 mod vault;

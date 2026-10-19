@@ -149,7 +149,6 @@ pub(crate) fn is_text(path: &Path) -> bool {
             | "cpp"
             | "css"
             | "csv"
-            | "eml"
             | "h"
             | "hpp"
             | "htm"
