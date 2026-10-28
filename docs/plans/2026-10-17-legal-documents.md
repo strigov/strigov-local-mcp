@@ -2,7 +2,7 @@
 slug: legal-documents
 orca_run: run_29e905388f88
 created: 2026-10-17
-status: in-progress
+status: done
 risk_phases: { Ф1: [SECURITY], Ф2: [SECURITY], Ф3: [SECURITY], Ф4: [SECURITY], Ф5: [SECURITY] }
 risk_checked: true
 phases:
