@@ -65,18 +65,7 @@ pub(crate) fn parse_eml(bytes: &[u8]) -> Result<Mail> {
     let attachments = message
         .attachments()
         .enumerate()
-        .map(|(i, part)| AttachmentInfo {
-            index: i + 1,
-            name: part.attachment_name().unwrap_or("attachment").to_owned(),
-            mime: part
-                .content_type()
-                .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream")))
-                .unwrap_or_else(|| "application/octet-stream".into()),
-            size: part.contents().len() as u64,
-            inline: part.content_disposition().is_some_and(|c| c.is_inline())
-                || part.content_id().is_some(),
-            embedded_message: part.is_message(),
-        })
+        .map(|(i, part)| attachment_info(part, i + 1))
         .collect();
     Ok(Mail {
         subject: message.subject().map(str::to_owned),
@@ -88,6 +77,36 @@ pub(crate) fn parse_eml(bytes: &[u8]) -> Result<Mail> {
         body_source,
         attachments,
     })
+}
+fn attachment_info(part: &mail_parser::MessagePart<'_>, index: usize) -> AttachmentInfo {
+    AttachmentInfo {
+        index,
+        name: part.attachment_name().unwrap_or("attachment").to_owned(),
+        mime: part
+            .content_type()
+            .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream")))
+            .unwrap_or_else(|| "application/octet-stream".into()),
+        size: part.contents().len() as u64,
+        inline: part.content_disposition().is_some_and(|c| c.is_inline())
+            || part.content_id().is_some(),
+        embedded_message: part.is_message(),
+    }
+}
+pub(crate) fn eml_attachment(bytes: &[u8], index: usize) -> Result<(AttachmentInfo, Vec<u8>)> {
+    if bytes.len() as u64 > EML_LIMIT {
+        return Err(error("FILE_TOO_LARGE", "EML exceeds 64 MiB"));
+    }
+    let message = MessageParser::default()
+        .parse(bytes)
+        .ok_or_else(|| error("DOCUMENT_INVALID", "Cannot parse EML"))?;
+    let part = index
+        .checked_sub(1)
+        .and_then(|i| u32::try_from(i).ok())
+        .and_then(|i| message.attachment(i))
+        .ok_or_else(|| error("MEMBER_NOT_FOUND", "Attachment not found"))?;
+    let info = attachment_info(part, index);
+    crate::documents::check_attachment(&info)?;
+    Ok((info, part.contents().to_vec()))
 }
 pub(crate) struct MailDocument {
     blocks: Vec<Unit>,
@@ -196,6 +215,30 @@ impl TextDocument for MailDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn attachment_bytes_and_embedded_eml_are_read_by_index() {
+        let raw = b"Subject: parent\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain\r\n\r\nbody\r\n--m\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=x.txt\r\nContent-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n--m\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment; filename=message.bin\r\n\r\nSubject: nested\r\n\r\nnested body\r\n--m--\r\n";
+        let (info, bytes) = eml_attachment(raw, 1).unwrap();
+        assert_eq!(info.name, "x.txt");
+        assert_eq!(bytes, b"hello");
+        let (info, bytes) = eml_attachment(raw, 2).unwrap();
+        assert!(info.embedded_message);
+        assert_eq!(
+            parse_eml(&bytes).unwrap().subject.as_deref(),
+            Some("nested")
+        );
+        for index in [0, 3, usize::MAX] {
+            assert_eq!(
+                eml_attachment(raw, index).err().unwrap().code,
+                "MEMBER_NOT_FOUND"
+            );
+        }
+        let blocked = String::from_utf8_lossy(raw).replace("x.txt", ".env");
+        assert_eq!(
+            eml_attachment(blocked.as_bytes(), 1).err().unwrap().code,
+            "BLOCKED_PATH"
+        );
+    }
     #[test]
     fn russian_charsets_and_encoded_headers() {
         for (charset, enc) in [

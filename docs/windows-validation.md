@@ -67,7 +67,7 @@ Windows-ветка `native/installer.rs` (`native/installer_windows.rs`) и сб
 ```powershell
 pwsh -NoProfile -File scripts/build-installer-windows.ps1
 python -B -m unittest discover -s test -p test_windows_packaging.py
-python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.1.2-windows-x64.zip --output-root artifacts/windows-checks
+python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.2.0-windows-x64.zip --output-root artifacts/windows-checks
 ```
 
 Результаты нативной проверки 13 октября 2026, ручного CI и установщика —

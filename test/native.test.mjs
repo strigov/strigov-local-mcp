@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm, rename, open } from 'node:fs/pr
 import path from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
-import { deflateSync, crc32 } from 'node:zlib';
+import { deflateSync, deflateRawSync, crc32 } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -220,9 +220,9 @@ test('special files fail promptly without blocking following requests',{skip:pro
   assert.equal((await f.call('list_roots')).isError,undefined);
 });
 
-function syntheticPdf() {
+function syntheticPdf(phrase='Synthetic native PDF text for the first page.') {
   const image=deflateSync(Buffer.alloc(1000000,200));
-  const text=Buffer.from('BT /F 12 Tf (Synthetic native PDF text for the first page.) Tj ET');
+  const text=Buffer.from(`BT /F 12 Tf (${phrase}) Tj ET`);
   const paint=Buffer.from('q 600 0 0 800 0 0 cm /Im Do Q');
   const stream=(dict,data)=>Buffer.concat([Buffer.from(`<< ${dict} /Length ${data.length} >>\nstream\n`),data,Buffer.from('\nendstream')]);
   const objects=[
@@ -436,16 +436,18 @@ test('all-root cursors follow configuration order and reject a removed cursor ro
 // Small synthetic office packages: STORED ZIP, no external converter or client data.
 function officeZip(parts) {
   const local=[],central=[];let offset=0;
-  for(const [filename,body] of Object.entries(parts)) {
-    const name=Buffer.from(filename),data=Buffer.from(body),crc=crc32(data);
-    const header=Buffer.alloc(30);header.writeUInt32LE(0x04034b50);header.writeUInt16LE(20,4);header.writeUInt16LE(0x800,6);
-    header.writeUInt32LE(crc,14);header.writeUInt32LE(data.length,18);header.writeUInt32LE(data.length,22);header.writeUInt16LE(name.length,26);
+  const entries=Array.isArray(parts)?parts:Object.entries(parts);
+  for(const [filename,body,options={}] of entries) {
+    const name=Buffer.from(filename),plain=Buffer.from(body),data=options.method===8?deflateRawSync(plain):plain,crc=crc32(plain);
+    const flags=options.flags??(Buffer.isBuffer(filename)?0:0x800),size=options.size??plain.length,method=options.method??0;
+    const header=Buffer.alloc(30);header.writeUInt32LE(0x04034b50);header.writeUInt16LE(20,4);header.writeUInt16LE(flags,6);header.writeUInt16LE(method,8);
+    header.writeUInt32LE(crc,14);header.writeUInt32LE(data.length,18);header.writeUInt32LE(size,22);header.writeUInt16LE(name.length,26);
     local.push(header,name,data);
-    const directory=Buffer.alloc(46);directory.writeUInt32LE(0x02014b50);directory.writeUInt16LE(20,4);directory.writeUInt16LE(20,6);directory.writeUInt16LE(0x800,8);
-    directory.writeUInt32LE(crc,16);directory.writeUInt32LE(data.length,20);directory.writeUInt32LE(data.length,24);directory.writeUInt16LE(name.length,28);directory.writeUInt32LE(offset,42);
+    const directory=Buffer.alloc(46);directory.writeUInt32LE(0x02014b50);directory.writeUInt16LE(20,4);directory.writeUInt16LE(20,6);directory.writeUInt16LE(flags,8);directory.writeUInt16LE(method,10);
+    directory.writeUInt32LE(crc,16);directory.writeUInt32LE(data.length,20);directory.writeUInt32LE(size,24);directory.writeUInt16LE(name.length,28);directory.writeUInt32LE(offset,42);
     central.push(directory,name);offset+=header.length+name.length+data.length;
   }
-  const directory=Buffer.concat(central),end=Buffer.alloc(22),count=Object.keys(parts).length;
+  const directory=Buffer.concat(central),end=Buffer.alloc(22),count=entries.length;
   end.writeUInt32LE(0x06054b50);end.writeUInt16LE(count,8);end.writeUInt16LE(count,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
   return Buffer.concat([...local,directory,end]);
 }
@@ -515,14 +517,14 @@ test('XLSX cached rows, sheet selection and cursor request identity through MCP'
   assert.equal((await f.call('read_document',{...args,sheet:'missing'})).structuredContent.error.code,'INVALID_ARGUMENT');
   assert.match((await f.call('fetch',{id:'work:synthetic.xlsx'})).structuredContent.text,/Сумма/);
 });
-test('EML headers, body, attachment provenance and exclusion from plain text search',async t=>{
+test('EML headers, body, attachment provenance and document search',async t=>{
   const f=await fixture(t),args={root:'work',path:'synthetic.eml'};
   const raw='Subject: =?windows-1251?Q?=CF=F0=E8=E2=E5=F2?=\r\nFrom: Sender <sender@example.test>\r\nTo: Reader <reader@example.test>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nEML_ONLY_NEEDLE Текст 😀\r\n\r\nВторой абзац\r\n--m\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=synthetic.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nAQID\r\n--m--\r\n';
   await writeFile(path.join(f.work,args.path),raw);
   const info=(await f.call('inspect_document',args)).structuredContent;assert.equal(info.subject,'Привет');assert.equal(info.bodySource,'text/plain');assert.equal(info.attachments[0].size,3);assert.equal(info.attachments[0].path,'work/synthetic.eml::1');
   const doc=(await f.call('read_document',args)).structuredContent;assert.equal(doc.unitName,'part');assert.ok(doc.units.some(u=>u.part==='body'));assert.match(doc.text,/Второй абзац/);assert.match(doc.text,/synthetic.pdf/);
   assert.equal((await f.call('read_file',args)).structuredContent.text,doc.text);assert.equal((await f.call('fetch',{id:'work:synthetic.eml'})).structuredContent.text,doc.text);
-  assert.equal((await f.call('search_text',{root:'work',query:'EML_ONLY_NEEDLE'})).structuredContent.results.length,0);
+  assert.equal((await f.call('search_text',{root:'work',query:'EML_ONLY_NEEDLE'})).structuredContent.results.length,1);
   assert.equal((await f.call('get_file_info',args)).structuredContent.format,'eml');assert.ok(!JSON.stringify(info).includes(f.work));
 });
 test('EML multipart selections survive complete cursor chains without alternative duplicates',async t=>{
@@ -571,4 +573,125 @@ test('truncated office containers fail explicitly and the MCP server remains usa
     assert.equal(result.isError,true);assert.equal(result.structuredContent.error.code,'DOCUMENT_INVALID');assert.ok(!JSON.stringify(result).includes(f.work));
   }
   assert.equal((await f.call('read_document',{root:'work',path:'Привет.md'})).structuredContent.format,'text');
+});
+
+test('Ф5 ZIP member paths, safe listings, nested readers and cursor fit',async t=>{
+  const f=await fixture(t);
+  const inner=officeZip({'x.txt':'NESTED_NEEDLE','deeper.zip':officeZip({'last.zip':officeZip({'end.txt':'end'})})});
+  await writeFile(path.join(f.work,'a.zip'),officeZip({'folder/doc.docx':syntheticDocx(),'doc.pdf':syntheticPdf(),'inner.zip':inner,'.env':'SECRET','../outside.txt':'NEVER','file.txt':'member text'}));
+  const listed=(await f.call('list_directory',{root:'work',path:'a.zip',depth:2})).structuredContent;
+  assert.ok(listed.entries.some(e=>e.path==='work/a.zip::folder/doc.docx'));
+  assert.ok(!listed.entries.some(e=>e.name==='.env'));
+  assert.equal(listed.entries.find(e=>e.name==='../outside.txt')?.readable,false);
+  for(const [member,pattern] of [['doc.pdf',/page 1/],['folder/doc.docx',/Договор/],['inner.zip::x.txt',/NESTED_NEEDLE/]]) {
+    const read=await f.call('read_document',{root:'work',path:`a.zip::${member}`});assert.equal(read.isError,undefined);assert.match(read.structuredContent.text,pattern);
+  }
+  const prefix=(await f.call('list_directory',{root:'work',path:'a.zip::folder'})).structuredContent;
+  assert.deepEqual(prefix.entries.map(e=>e.name),['doc.docx']);
+  assert.equal((await f.call('read_document',{root:'work',path:'a.zip::inner.zip::deeper.zip::last.zip::end.txt'})).structuredContent.error.code,'NESTING_TOO_DEEP');
+  for(const member of ['../outside.txt','.env','missing.txt']) {
+    const r=await f.call('read_document',{root:'work',path:`a.zip::${member}`});assert.equal(r.isError,true);assert.ok(!JSON.stringify(r).includes(f.work));
+  }
+  const summary=(await f.call('read_document',{root:'work',path:'a.zip'})).structuredContent;assert.equal(summary.kind,'inspect');assert.ok(summary.entries>0);
+  await writeFile(path.join(f.work,'long.zip'),officeZip({'a.txt':'a',[`${'d'.repeat(1600)}/inner.txt`]:'hidden',[`${'x'.repeat(1600)}.txt`]:'hidden','y.txt':'y','z.txt':'z'}));
+  for(const limit of [100,1]) {
+    const names=[];let cursor,skipped=0;
+    do {
+      const r=await f.call('list_directory',{root:'work',path:'long.zip',depth:2,limit,...(cursor?{cursor}:{})});assert.equal(r.isError,undefined);
+      names.push(...r.structuredContent.entries.map(e=>e.name));skipped+=r.structuredContent.skippedTooDeep;cursor=r.structuredContent.nextCursor;
+      if(cursor)assert.ok(cursor.length<=2048);
+    }while(cursor);
+    assert.deepEqual(names,['a.txt','y.txt','z.txt']);assert.equal(skipped,2);
+  }
+});
+
+test('Ф5 search inside documents, single-file hits and mixed folder continuation',async t=>{
+  const f=await fixture(t);await mkdir(path.join(f.work,'mixed'));
+  for(let i=0;i<23;i++)await writeFile(path.join(f.work,'mixed',`${String(i).padStart(2,'0')}.${i%2?'docx':'txt'}`),i%2?syntheticDocx('PHASEFIVE_NEEDLE'): 'PHASEFIVE_NEEDLE');
+  let cursor;const hits=[];
+  do {const r=(await f.call('search_text',{root:'work',path:'mixed',query:'PHASEFIVE_NEEDLE',limit:5,...(cursor?{cursor}:{})})).structuredContent;hits.push(...r.results);cursor=r.nextCursor;}while(cursor);
+  assert.equal(hits.length,23);assert.equal(new Set(hits.map(h=>h.path)).size,23);assert.ok(hits.some(h=>h.locator?.paragraph));
+  await writeFile(path.join(f.work,'hits.txt'),'NEEDLE here NEEDLE\nthen NEEDLE');
+  const all=[];cursor=undefined;
+  do {const r=await f.call('search_text',{root:'work',path:'hits.txt',query:'NEEDLE',limit:1,...(cursor?{cursor}:{})});assert.equal(r.isError,undefined);all.push(...r.structuredContent.results);cursor=r.structuredContent.nextCursor;}while(cursor);
+  assert.equal(all.length,3);assert.deepEqual(all.map(h=>h.locator.line),[1,1,2]);
+});
+
+function mailAttachment(data,name,mime='application/octet-stream') {
+  return `Subject: synthetic attachment\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nparent body\r\n--m\r\nContent-Type: ${mime}\r\nContent-Disposition: attachment; filename="${name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(data).toString('base64')}\r\n--m--\r\n`;
+}
+test('Ф5 ZIP CP866, compression and corrupted member bounds through MCP',async t=>{
+  const f=await fixture(t),cp866=Buffer.from([0x88,0xe1,0xaa,46,112,100,102]);
+  await writeFile(path.join(f.work,'cp.zip'),officeZip([[cp866,syntheticPdf()],['text.txt','compressed text',{method:8}],['enc.txt','secret',{flags:1}],['unsupported.txt','data',{method:12}]]));
+  const list=(await f.call('list_directory',{root:'work',path:'cp.zip'})).structuredContent.entries;
+  assert.ok(list.some(e=>e.name==='Иск.pdf'));assert.equal(list.find(e=>e.name==='enc.txt').reason,'ENCRYPTED_MEMBER');assert.equal(list.find(e=>e.name==='unsupported.txt').reason,'UNSUPPORTED_COMPRESSION');
+  assert.match((await f.call('read_document',{root:'work',path:'cp.zip::Иск.pdf'})).structuredContent.text,/Synthetic native PDF/);
+  assert.equal((await f.call('read_text_file',{root:'work',path:'cp.zip::text.txt'})).structuredContent.text,'compressed text');
+  for(const [name,options,code] of [['bomb.zip',{size:2*1024*1024},'ZIP_BOMB'],['wrong.zip',{size:2},'ZIP_INVALID'],['big.zip',{size:256*1024*1024+1},'FILE_TOO_LARGE']]) {
+    await writeFile(path.join(f.work,name),officeZip([['x.txt','hello',options]]));
+    assert.equal((await f.call('read_document',{root:'work',path:`${name}::x.txt`})).structuredContent.error.code,code);
+  }
+  for(const [member,code] of [['enc.txt','ENCRYPTED_MEMBER'],['unsupported.txt','UNSUPPORTED_COMPRESSION']])assert.equal((await f.call('read_file',{root:'work',path:`cp.zip::${member}`})).structuredContent.error.code,code);
+});
+test('Ф5 attachments share readers, views, search and stable member cursor identity',async t=>{
+  const f=await fixture(t);
+  for(const [name,data,pattern] of [['text.txt','first\nsecond',/first/],['doc.docx',syntheticDocx(),/Договор/],['page.pdf',syntheticPdf(),/Synthetic native PDF/],['book.xlsx',syntheticXlsx(),/Сумма/]]) {
+    await writeFile(path.join(f.work,'letter.eml'),mailAttachment(data,name));
+    const args={root:'work',path:'letter.eml::1'};
+    assert.match((await f.call('read_document',args)).structuredContent.text,pattern);
+    assert.match((await f.call('read_file',args)).structuredContent.text,pattern);
+    const fetched=(await f.call('fetch',{id:'work:letter.eml::1'})).structuredContent;assert.match(fetched.text,pattern);
+    if(name==='page.pdf')assert.equal(fetched.metadata.mimeType,'application/pdf');
+    assert.equal((await f.call('list_directory',{root:'work',path:'letter.eml'})).structuredContent.entries[0].index,1);
+  }
+  await writeFile(path.join(f.work,'letter.eml'),mailAttachment(syntheticPng(64,32),'image.png'));
+  const image=await f.call('read_file',{root:'work',path:'letter.eml::1',region:{x:0,y:0,width:0.5,height:1}});assert.equal(image.structuredContent.kind,'image');assert.equal(image.structuredContent.width,32);
+  await writeFile(path.join(f.work,'letter.eml'),mailAttachment('Subject: nested\r\n\r\nnested body','nested.bin','message/rfc822'));
+  const nested=(await f.call('read_document',{root:'work',path:'letter.eml::1'})).structuredContent;assert.equal(nested.format,'eml');assert.match(nested.text,/nested body/);
+  await writeFile(path.join(f.work,'letter.eml'),mailAttachment('SECRET','.env'));assert.deepEqual((await f.call('list_directory',{root:'work',path:'letter.eml'})).structuredContent.entries,[]);assert.equal((await f.call('read_file',{root:'work',path:'letter.eml::1'})).structuredContent.error.code,'BLOCKED_PATH');
+  await writeFile(path.join(f.work,'identity.zip'),officeZip({'a.txt':'needle '.repeat(30),'b.txt':'needle '.repeat(30)}));
+  const args={root:'work',path:'identity.zip::a.txt'};
+  const doc=(await f.call('read_document',{...args,maxChars:100})).structuredContent;
+  assert.ok(doc.nextCursor);
+  assert.equal((await f.call('read_document',{...args,path:'identity.zip::b.txt',cursor:doc.nextCursor})).structuredContent.error.code,'INVALID_CURSOR');
+  const found=(await f.call('search_text',{...args,query:'needle',limit:1})).structuredContent;assert.ok(found.nextCursor);
+  assert.equal((await f.call('search_text',{...args,path:'identity.zip::b.txt',query:'needle',cursor:found.nextCursor})).structuredContent.error.code,'INVALID_CURSOR');
+  await writeFile(path.join(f.work,'identity.zip'),officeZip({'a.txt':'changed needle text'}));
+  assert.equal((await f.call('read_document',{...args,cursor:doc.nextCursor})).structuredContent.error.code,'STALE_CURSOR');
+  assert.equal((await f.call('search_text',{...args,query:'needle',cursor:found.nextCursor})).structuredContent.error.code,'STALE_CURSOR');
+});
+test('Ф5 PDF all hits carry page numbers and folder hits reach connector search',async t=>{
+  const f=await fixture(t);await writeFile(path.join(f.work,'document.pdf'),syntheticPdf('UNIQUEPDFNEEDLE first UNIQUEPDFNEEDLE second UNIQUEPDFNEEDLE'));
+  let cursor;const hits=[];
+  do {const r=await f.call('search_text',{root:'work',path:'document.pdf',query:'UNIQUEPDFNEEDLE',limit:2,...(cursor?{cursor}:{})});assert.equal(r.isError,undefined);hits.push(...r.structuredContent.results);cursor=r.structuredContent.nextCursor;}while(cursor);
+  assert.equal(hits.length,3);assert.ok(hits.every(h=>h.locator.page===1 && h.snippet.startsWith('[p. 1]')));
+  const folder=(await f.call('search_text',{root:'work',query:'UNIQUEPDFNEEDLE'})).structuredContent;assert.equal(folder.results.length,1);assert.equal(folder.documentsSearched,1);
+  assert.equal((await f.call('search',{query:'UNIQUEPDFNEEDLE'})).structuredContent.results[0].id,'work:document.pdf');
+});
+
+test('Ф5-F1-B1 container depth cap on ZIP and EML listings and inspection',async t=>{
+  const f=await fixture(t);
+  for(const [name,bytes] of [['c.zip',officeZip({'c.txt':'SAFE CHILD','d.zip':officeZip({'d.txt':'depth four'})})],['letter.eml',mailAttachment('SAFE CHILD','child.txt')]]) {
+    const raw=`a.zip::nested.zip::b.zip::${name}`;
+    await writeFile(path.join(f.work,'a.zip'),officeZip({'nested.zip':officeZip({'b.zip':officeZip({[name]:bytes})})}));
+    const parent='a.zip::nested.zip::b.zip';
+    const list=await f.call('list_directory',{root:'work',path:parent});assert.equal(list.isError,undefined);assert.equal(list.structuredContent.entries[0].readable,true);
+    const parentInfo=await f.call('inspect_document',{root:'work',path:parent});assert.equal(parentInfo.isError,undefined);assert.equal(parentInfo.structuredContent.entries,1);
+    for(const tool of ['list_directory','inspect_document']) {
+      const result=await f.call(tool,{root:'work',path:raw});assert.equal(result.isError,true,`${tool}: ${name}`);assert.equal(result.structuredContent.error.code,'NESTING_TOO_DEEP');
+      assert.equal(result.structuredContent.entries,undefined);assert.equal(result.structuredContent.attachments,undefined);
+      assert.ok(!JSON.stringify(result).includes(`${raw}::`));
+    }
+    const reader=await f.call('read_document',{root:'work',path:raw});
+    if(name.endsWith('.eml')) {
+      assert.equal(reader.isError,undefined);assert.match(reader.structuredContent.text,/parent body/);assert.equal(reader.structuredContent.attachments[0].path,undefined);
+    } else {assert.equal(reader.structuredContent.error.code,'NESTING_TOO_DEEP');}
+  }
+  for(const [name,bytes,child] of [['c.zip',officeZip({'c.txt':'SAFE CHILD'}),'c.txt'],['letter.eml',mailAttachment('SAFE CHILD','child.txt'),'1']]) {
+    await writeFile(path.join(f.work,'a.zip'),officeZip({'nested.zip':officeZip({[name]:bytes})}));
+    const raw=`a.zip::nested.zip::${name}`;
+    const list=await f.call('list_directory',{root:'work',path:raw});assert.equal(list.isError,undefined);assert.equal(list.structuredContent.entries[0].readable,true);
+    const info=await f.call('inspect_document',{root:'work',path:raw});assert.equal(info.isError,undefined);
+    const read=await f.call('read_document',{root:'work',path:`${raw}::${child}`});assert.equal(read.isError,undefined);assert.match(read.structuredContent.text,/SAFE CHILD/);
+  }
 });

@@ -1,6 +1,7 @@
 use crate::config::{Config, Root};
 use crate::{
     cursor::{self, Cursor, CursorKind, Fingerprint},
+    doc_search,
     documents::{self, Format},
     walk::{WalkEvent, Walker},
 };
@@ -437,9 +438,11 @@ impl Filesystem {
         let id = self.canonical_root(string(args, "root", None)?)?;
         let raw = string(args, "path", None)?;
         let root = self.root(id)?;
-        let p = root.resolve(raw)?;
-        let logical = relative(raw)?;
-        let format = documents::format_of(&display(&p));
+        let mut opened = documents::open(&root, id, raw)?;
+        let p = PathBuf::from(&opened.name);
+        let location_display = opened.location.display();
+        let location_uri = opened.location.uri();
+        let format = opened.format;
         if matches!(format, Format::Heic | Format::LegacyOffice)
             && (binary || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("rtf")))
         {
@@ -459,23 +462,38 @@ impl Filesystem {
         }
         let is_binary = binary && !is_text(&p);
         if is_binary {
-            let mut buf = Vec::new();
-            root.read(&p, BINARY_LIMIT, &mut buf)?;
+            if opened.size > BINARY_LIMIT {
+                return Err(error(
+                    "FILE_TOO_LARGE",
+                    "File exceeds the binary size limit",
+                ));
+            }
+            let mut buf = Vec::with_capacity(opened.size as usize + 1);
+            (&mut opened.source)
+                .take(opened.size + 1)
+                .read_to_end(&mut buf)
+                .map_err(io_error)?;
+            if buf.len() as u64 > opened.size {
+                return Err(error("FILE_TOO_LARGE", "File grew beyond the read limit"));
+            }
             if std::str::from_utf8(&buf).is_err() {
                 return Ok(
-                    json!({"kind":"binary","root":id,"path":public(id,&logical),"uri":uri(id,&logical),"mimeType":mime(&p),"size":buf.len(),"blob":base64::engine::general_purpose::STANDARD.encode(&buf)}),
+                    json!({"kind":"binary","root":id,"path":location_display,"uri":location_uri,"mimeType":mime(&p),"size":buf.len(),"blob":base64::engine::general_purpose::STANDARD.encode(&buf)}),
                 );
             }
+            opened.source = documents::Source::Memory(std::io::Cursor::new(buf));
         }
-        let (file, fingerprint) = root.open_file(
-            &p,
-            if is_binary {
+        if opened.size
+            > if is_binary {
                 BINARY_LIMIT
             } else {
                 TEXT_READ_LIMIT
-            },
-        )?;
-        let mut reader = BufReader::new(file.take(fingerprint.size + 1));
+            }
+        {
+            return Err(error("FILE_TOO_LARGE", "File exceeds the text size limit"));
+        }
+        let read_size = opened.size;
+        let mut reader = BufReader::new(opened.source.take(read_size + 1));
         let start = number(args, "startLine", 1, usize::MAX)?;
         let requested_end = number(args, "endLine", usize::MAX, usize::MAX)?;
         let max = number(args, "maxChars", OUTPUT_LIMIT, OUTPUT_LIMIT)?;
@@ -489,7 +507,7 @@ impl Filesystem {
             line.clear();
             let n = reader.read_until(b'\n', &mut line).map_err(io_error)?;
             bytes += n as u64;
-            if bytes > fingerprint.size {
+            if bytes > read_size {
                 return Err(error("FILE_TOO_LARGE", "File grew beyond the read limit"));
             }
             total += 1;
@@ -534,14 +552,20 @@ impl Filesystem {
             ));
         }
         Ok(
-            json!({"kind":"text","root":id,"path":public(id,&logical),"uri":uri(id,&logical),"mimeType":mime(&p),"text":out,"startLine":start,"endLine":start+memchr::memchr_iter(b'\n',out.as_bytes()).count(),"totalLines":total,"truncated":truncated}),
+            json!({"kind":"text","root":id,"path":location_display,"uri":location_uri,"mimeType":mime(&p),"text":out,"startLine":start,"endLine":start+memchr::memchr_iter(b'\n',out.as_bytes()).count(),"totalLines":total,"truncated":truncated}),
         )
     }
     fn list(&self, args: &Value) -> Result<Value> {
         let id = string(args, "root", None)?;
         let raw = string(args, "path", Some(""))?;
         let root = self.root(id)?;
+        if raw.contains("::") {
+            return documents::list_container(&root, id, args);
+        }
         let base = root.resolve(raw)?;
+        if root.dir.metadata(&base).map_err(io_error)?.is_file() {
+            return documents::list_container(&root, id, args);
+        }
         let depth = number(args, "depth", 1, 5)?;
         let limit = number(args, "limit", 500, 2000)?;
         let logical = relative(raw)?;
@@ -617,7 +641,20 @@ impl Filesystem {
             if text_search { 100 } else { 200 },
         )?;
         let selected = string(args, "root", Some("all"))?;
-        let base = relative(string(args, "path", Some(""))?)?;
+        let raw = string(args, "path", Some(""))?;
+        if text_search && selected != "all" {
+            let root = self.root(selected)?;
+            if raw.contains("::")
+                || root
+                    .dir
+                    .metadata(root.resolve(raw)?)
+                    .map_err(io_error)?
+                    .is_file()
+            {
+                return self.search_document(args, &matcher, limit);
+            }
+        }
+        let base = relative(raw)?;
         if selected != "all" && !self.config.roots.iter().any(|r| r.id == selected) {
             return Err(error("UNKNOWN_ROOT", "Unknown folder alias"));
         }
@@ -642,9 +679,18 @@ impl Filesystem {
             }
             None => None,
         };
+        let (doc_scan_limit, doc_file_limit) = (
+            doc_search::DOC_SCAN_LIMIT,
+            doc_search::SEARCH_DOC_FILE_LIMIT,
+        );
+        #[cfg(test)]
+        let (doc_scan_limit, doc_file_limit) = doc_search::TEST_SCAN_BUDGET
+            .with(|c| c.get().unwrap_or((doc_scan_limit, doc_file_limit)));
         let mut results = Vec::new();
         let mut unavailable = Vec::new();
         let mut scanned = 0u64;
+        let mut doc_scanned = 0u64;
+        let mut documents_searched = 0;
         let mut visited = 0;
         let mut skipped = 0;
         let mut skipped_too_deep = 0;
@@ -682,7 +728,9 @@ impl Filesystem {
                 base.clone(),
                 usize::MAX,
                 after,
-                false,
+                text_search
+                    && resume_index == Some(index)
+                    && resume.as_ref().is_some_and(|c| c.f.is_some()),
             )
             .peekable();
             let mut last = if resume_index == Some(index) {
@@ -749,6 +797,86 @@ impl Filesystem {
                             results.push(json!({"root":definition.id,"path":public(&definition.id,&entry.logical),"relativePath":display(&entry.logical),"uri":uri(&definition.id,&entry.logical),"line":memchr::memchr_iter(b'\n',&buffer[..found.start()]).count()+1,"snippet":text[from..to].split_whitespace().collect::<Vec<_>>().join(" ")}));
                         }
                     }
+                } else if text_search
+                    && entry.file_type.is_file()
+                    && documents::format_of(&display(&entry.real)).has_text_reader()
+                {
+                    let meta = match root.dir.metadata(&entry.real) {
+                        Ok(m) => m,
+                        Err(_) => {
+                            inaccessible += 1;
+                            skipped_too_deep += entry.skipped_before;
+                            visited += 1;
+                            last = Some(walk_position(hash, &definition.id, entry.components));
+                            continue;
+                        }
+                    };
+                    if meta.len() > doc_file_limit {
+                        skipped += 1;
+                    } else {
+                        if doc_scanned + meta.len() > doc_scan_limit && visited > 0 {
+                            next =
+                                last.or_else(|| Some(walk_position(hash, &definition.id, vec![])));
+                            break 'roots;
+                        }
+                        // Charge source bytes even when a parser rejects the document.
+                        doc_scanned += meta.len();
+                        let document =
+                            documents::open(&root, &definition.id, &display(&entry.real));
+                        let found = document.and_then(|opened| {
+                            if opened.size > meta.len() {
+                                return Err(error(
+                                    "FILE_TOO_LARGE",
+                                    "Document grew beyond the search budget",
+                                ));
+                            }
+                            let fingerprint = opened.fingerprint;
+                            let mut doc = documents::open_text_document(opened, args)?;
+                            let current =
+                                walk_position(hash, &definition.id, entry.components.clone());
+                            let unfinished = resume
+                                .as_ref()
+                                .filter(|c| c.p == current.p && c.f == Some(fingerprint));
+                            let start = unfinished
+                                .map(|c| usize::try_from(c.u))
+                                .transpose()
+                                .map_err(|_| error("INVALID_CURSOR", "Invalid search unit"))?
+                                .unwrap_or(0);
+                            let offset = unfinished
+                                .map(|c| usize::try_from(c.o))
+                                .transpose()
+                                .map_err(|_| error("INVALID_CURSOR", "Invalid search offset"))?
+                                .unwrap_or(0);
+                            documents_searched += 1;
+                            doc_search::find_in_document(
+                                doc.as_mut(),
+                                &matcher,
+                                start,
+                                offset,
+                                1,
+                                deadline,
+                            )
+                            .map(|r| (fingerprint, r))
+                        });
+                        match found {
+                            Ok((fingerprint, (hits, position))) => {
+                                if let Some(hit) = hits.into_iter().next() {
+                                    results.push(json!({"root":definition.id,"path":public(&definition.id,&entry.logical),"relativePath":display(&entry.logical),"uri":uri(&definition.id,&entry.logical),"locator":hit.locator,"snippet":hit.snippet}));
+                                } else if let Some((u, o)) = position {
+                                    let mut c =
+                                        walk_position(hash, &definition.id, entry.components);
+                                    c.f = Some(fingerprint);
+                                    c.u = u as u64;
+                                    c.o = o as u64;
+                                    skipped_too_deep += entry.skipped_before;
+                                    next = Some(c);
+                                    break 'roots;
+                                }
+                            }
+                            Err(e) if e.code == "INVALID_CURSOR" => return Err(e),
+                            Err(_) => inaccessible += 1,
+                        }
+                    }
                 } else if !text_search
                     && entry.file_type.is_file()
                     && matcher.is_match(&display(&entry.logical))
@@ -763,13 +891,73 @@ impl Filesystem {
                 last = Some(walk_position(hash, &definition.id, entry.components));
             }
         }
-        let mut output = json!({"query":query,"results":results,"scannedBytes":scanned,"skippedLargeFiles":skipped,"skippedInaccessible":inaccessible,"skippedTooDeep":skipped_too_deep,"unavailableRoots":unavailable,"truncated":next.is_some()});
+        let mut output = json!({"query":query,"results":results,"scannedBytes":scanned + doc_scanned,"documentsSearched":documents_searched,"skippedLargeFiles":skipped,"skippedInaccessible":inaccessible,"skippedTooDeep":skipped_too_deep,"unavailableRoots":unavailable,"truncated":next.is_some()});
         if let Some(c) = next {
             output["nextCursor"] = json!(cursor::encode(&c));
         }
         Ok(output)
     }
 
+    fn search_document(&self, args: &Value, matcher: &regex::Regex, limit: usize) -> Result<Value> {
+        documents::guarded(|| {
+            let id = string(args, "root", None)?;
+            let query = string(args, "query", None)?;
+            let root = self.root(id)?;
+            let deadline = Instant::now() + SEARCH_DEADLINE;
+            let opened = documents::open(&root, id, string(args, "path", None)?)?;
+            let hash = cursor::request_hash(&["search_text", id, &opened.location.id(), query]);
+            let resume = args
+                .get("cursor")
+                .map(|_| cursor::decode(string(args, "cursor", None)?, CursorKind::Find, hash))
+                .transpose()?;
+            if let Some(c) = &resume {
+                cursor::check_fingerprint(c, opened.fingerprint)?;
+            }
+            let fingerprint = opened.fingerprint;
+            let size = opened.size;
+            let path = opened.location.display();
+            let relative_path = path
+                .strip_prefix(&format!("{id}/"))
+                .unwrap_or(&path)
+                .to_owned();
+            let uri = opened.location.uri();
+            let mut doc = documents::open_text_document(opened, args)?;
+            let start = resume
+                .as_ref()
+                .map(|c| usize::try_from(c.u))
+                .transpose()
+                .map_err(|_| error("INVALID_CURSOR", "Invalid search unit"))?
+                .unwrap_or(0);
+            let offset = resume
+                .as_ref()
+                .map(|c| usize::try_from(c.o))
+                .transpose()
+                .map_err(|_| error("INVALID_CURSOR", "Invalid search offset"))?
+                .unwrap_or(0);
+            let (hits, next) = doc_search::find_in_document(
+                doc.as_mut(),
+                matcher,
+                start,
+                offset,
+                limit,
+                deadline,
+            )?;
+            let results: Vec<_> = hits.into_iter().map(|hit| json!({"root":id,"path":path,"relativePath":relative_path,"uri":uri,"locator":hit.locator,"snippet":hit.snippet})).collect();
+            let mut result = json!({"query":query,"results":results,"documentsSearched":1,"scannedBytes":size,"skippedLargeFiles":0,"skippedInaccessible":0,"skippedTooDeep":0,"unavailableRoots":[],"truncated":next.is_some()});
+            if let Some((u, o)) = next {
+                result["nextCursor"] = json!(cursor::encode(&Cursor {
+                    v: 1,
+                    k: CursorKind::Find,
+                    h: hash,
+                    f: Some(fingerprint),
+                    p: vec![],
+                    u: u as u64,
+                    o: o as u64
+                }));
+            }
+            Ok(result)
+        })
+    }
     fn connector_search(&self, args: &Value) -> Result<Value> {
         let query = string(args, "query", None)?;
         let names = self.search(&json!({"query":query,"limit":20}), false)?;

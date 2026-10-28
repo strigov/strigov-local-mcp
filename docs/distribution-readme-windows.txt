@@ -1,4 +1,4 @@
-Strigov Local MCP 2.1.2
+Strigov Local MCP 2.2.0
 
 УСТАНОВКА НА WINDOWS
 

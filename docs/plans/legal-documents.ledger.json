@@ -1,0 +1,1531 @@
+[
+ {
+  "id": "P1-B1",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Set risk_phases.Ф1 to [SECURITY] and add its '- Ф1 — SECURITY: ...' risk line (probe generator builds output paths from CLI-supplied <new-dir> and --answers).",
+  "forbidden_expansions": [
+   "do not redesign the generator"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B2",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Make contracts phase-consistent: the shared ZIP limit constant(s) used by Ф4 (e.g. ZIP_ENTRY_LIMIT) must live in a module that exists by Ф4 (define in Ф4 or earlier, Ф5 reuses); and give branch C a PageView contract that does not reference crate::imaging (omitted in branch C).",
+  "forbidden_expansions": [
+   "no new modules beyond what is needed to host the constant"
+  ],
+  "materiality": "BUILD_BREAK",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B3",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Resolve the Ф1 test/generator contradiction: explicitly exempt the text-control page-text.pdf from the 'no codeword in uncompressed PDF bytes' assertion (or make the assertion apply only to image-carrying probes).",
+  "forbidden_expansions": [],
+  "materiality": "BUILD_BREAK",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B4",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Define calibrated limits for every Ф1 outcome (A, A+pdf, B, C, incl. image_max/pdf_max = none): clamp all defaults (e.g. DOC_DEFAULT_CHARS) to the calibrated ceiling (OUTPUT_LIMIT etc.), make floors never exceed the largest successfully delivered probe, and in branch B derive image encoding limits from the working PDF channel (pdf_max).",
+  "forbidden_expansions": [
+   "no new config knobs or settings UI"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B5",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Specify bounded, resumable enumeration for directories larger than the per-directory cap (e.g. name-ordered windows where the cursor carries the last emitted name and each call re-reads the directory keeping only the next window of names greater than it), so AC6 complete coverage holds; keep per-call memory bounded.",
+  "forbidden_expansions": [
+   "no index or disk cache",
+   "no new tools"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B6",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Folder-wide search cursor must preserve an unfinished document's in-document position and fingerprint alongside the walk state, advancing past the file only after exhaustion (or resuming inside it after a hit/deadline), so no later matches are lost and no prefix is re-searched endlessly.",
+  "forbidden_expansions": [
+   "no index"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B7",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Tighten the PDF page-image extraction rule: extract the embedded image only when the page's visible content is represented by that single image (no other painted images such as stamps/signatures and no meaningful vector/text content); otherwise use the outcome-selected fallback (single-page PDF) or not_viewable.",
+  "forbidden_expansions": [
+   "no compositing/rendering engine"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B8",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Add explicit dispatch rules (in the phase that first needs them) so excluded formats (HEIC/HEIF, legacy .doc, .rtf, RAR) return UNSUPPORTED_FORMAT with the user hint instead of reaching read_file's generic binary fallback; cover with a test.",
+  "forbidden_expansions": [
+   "do not remove the binary fallback for other unknown formats unless required"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B9",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Specify enforceable bounds for XLSX/XLS: bound actual decompressed bytes (e.g. inflate each needed ZIP entry through a counting/limited reader into bounded memory before handing data to calamine from memory, abort on exceeding) and bound workbook/range allocation (cells/rows) before the parser allocates unbounded memory; declared-size checks alone are not enough. Update R7 accordingly.",
+  "forbidden_expansions": [
+   "no forking/subprocess isolation",
+   "no replacing calamine unless strictly necessary"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "P1-B10",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Include scripts/verify-windows-distribution.py in Ф5 Files and release steps, updating its expected version string to 2.2.0 consistently with the release (and any other hard-coded 2.1.2 the release must bump).",
+  "forbidden_expansions": [],
+  "materiality": "REGRESSION",
+  "status": "fixed"
+ },
+ {
+  "id": "P2-B1",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Complete P1-B9: bound expanded cell-value bytes (shared strings copied into each owned cell by calamine worksheet_range for XLSX and parse_label_sst for XLS) before those allocations happen — e.g. pre-scan computing sum of referenced shared-string lengths per requested range/sheet against a byte budget and reject/limit before calling the allocating API; add a bounded test with repeated references to one long shared string.",
+  "forbidden_expansions": [
+   "no subprocess isolation",
+   "no replacing calamine unless strictly necessary"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "P2-B2",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Complete P1-B8 for .rtf: read_file/read paths return UNSUPPORTED_FORMAT with a hint for .rtf (remove .rtf from the raw-text path if it is in is_text), update the Non-goals statement accordingly, and cover with the existing UNSUPPORTED_FORMAT test.",
+  "forbidden_expansions": [
+   "no RTF parser"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P2-B3",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Fix branch-B calibration regression from P1-B4: derive the image budget from the actual single-page PDF wrapper overhead and enforce the final page-PDF ceiling, never yielding 0; define an explicit minimum usable pdf_max below which outcome B is not selectable (treat as C, or require re-running the probe); add a test for small positive pdf_max.",
+  "forbidden_expansions": [
+   "no new config knobs"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P2-B4",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Add an explicit Ф2 migration of test/native.test.mjs: the generic binary-resource test fixture (3 invalid bytes named sample.pdf) is renamed to an unsupported-by-readers extension (e.g. .bin) keeping the resource assertion, and invalid-PDF behavior (DOCUMENT_INVALID) is asserted separately.",
+  "forbidden_expansions": [],
+  "materiality": "BUILD_BREAK",
+  "status": "fixed"
+ },
+ {
+  "id": "P2-N1",
+  "reviewer": "codex-plan",
+  "decision": "NIT",
+  "authorized_change": null,
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "P3-B1",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Complete P1-B9/P2-B1: before open_workbook_from_rs, bound calamine's strings.reserve(uniqueCount) — e.g. remove or normalize the uniqueCount (and count) attributes of sharedStrings.xml while building the derived in-memory ZIP, or reject when uniqueCount exceeds what the bounded sharedStrings.xml bytes can hold; add a small forged-uniqueCount regression test proving protection before calamine opens; correct R7's claim about shared-string allocation scaling.",
+  "forbidden_expansions": [
+   "no subprocess isolation",
+   "no replacing calamine"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "P3-B2",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "authorized_change": "From the round-2 writer's deferred observation: bound XLS formula-text expansion (calamine parse_formula builds text for every FORMULA record, expanding name/sheet references) before calamine allocates it — minimal enforceable approach of the writer's choice (e.g. count FORMULA records and their expandable references in the existing BIFF pre-scan against SHEET_TEXT_LIMIT with a stated worst-case expansion factor, or reject over a FORMULA-record cap); add a bounded test.",
+  "forbidden_expansions": [
+   "no subprocess isolation",
+   "no replacing calamine"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "P3-B3",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "authorized_change": "From the round-2 writer's deferred observation: apply PAGE_PDF_MIN_USABLE to outcome A+pdf too — if pdf_max is below it, the single-page PDF fallback is not enabled (A+pdf is built as A); state it in C0 calibration and cover in the existing calibration unit test.",
+  "forbidden_expansions": [],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "P4-B1",
+  "reviewer": "codex-plan",
+  "decision": "ACCEPTED",
+  "authorized_change": "Complete P3-B2 (user chose: accept plan with this fix, no 5th review round): in the XLS BIFF pre-scan charge each FORMULA record its full rgce.len() initial reservation (calamine xls.rs:1449 String::with_capacity(rgce.len()) retained by Range::from_sparse) plus allowance for growth (e.g. 2x the token-text bound) plus a fixed allowance (~128 bytes) for the 'Unrecognised formula … InvalidFormula' diagnostic fallback (incl. cce=0), counted per sheet walk; reject (DOCUMENT_INVALID) workbooks whose BOUNDSHEET8 entries point at identical or overlapping substreams so each byte is parsed at most once; add bounded tests for padded FORMULA records and empty/error formulas; align C0/R7. Also mark in Ф4 that this XLS memory bound is a mandatory review item verified with synthetic malicious samples against real calamine 0.36.1 including a peak-memory measurement.",
+  "forbidden_expansions": [
+   "no subprocess isolation",
+   "no replacing calamine",
+   "no dropping .xls support"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "F1-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": null,
+  "note": "ledger file appears in review package; orchestrator bookkeeping, not committed",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "F1-D2",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": null,
+  "note": "summary() escapes \\n/\\r beyond C1 (harmless hardening)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "F1-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "doc: status prints JSON \"ready\": true, doc says ready: true",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "F1-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "doc: warn that no connected root may contain the answers file (e.g. a root covering ~)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "F1-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "generator: mkdir before writes leaves partial folder on failure",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "F1-N4",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "image_mime duplicates mime() extension preamble (plan-requested separate fn)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-PM1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "User decision 2026-10-18 ('Лимит 2 МиБ'): add constant PDF_CONTENT_LIMIT = 2 MiB bounding the CUMULATIVE decompressed content decoded for one page (page content streams + all Form XObjects at every nesting depth) before lopdf Content::decode; a page exceeding it is not text-extracted and is flagged (page-level flag, e.g. contentTooLarge / tooComplex, surfaced in inspect_document and in read_document's page heading/units) instead of failing the document; other pages read normally. PDF_STREAM_LIMIT (64 MiB) stays for non-content streams (images, ToUnicode). Plan: amend C0 (constant + per-call memory budget arithmetic) and C7 (text extraction contract, page kinds/flags), and Ф2 steps/tests (synthetic amplification test asserting the flag and bounded behaviour).",
+  "note": "Plan-mandated lopdf Content::decode with PDF_STREAM_LIMIT=64 MiB per content stream/form: ~100x memory amplification (8 MiB decoded content in 12.7 KB file -> 799 MiB RSS; 64 MiB -> ~6.3 GB). native/pdf.rs:153-174, 274-279. Breaks C0 per-call budget. Awaiting user decision.",
+  "forbidden_expansions": [
+   "no custom streaming tokenizer",
+   "no new crates",
+   "do not change PDF_STREAM_LIMIT for image/ToUnicode streams"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F1-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "native/pdf.rs: (a) a font whose encoding cannot be resolved (get_font_encoding_with_limit error other than Error::Decompress(MemoryLimitExceeded)) is skipped, its glyphs counted as undecodable via show() like missing fonts; decompression-limit errors still surface; (b) collect_images `continue`s on XObject entries that do not resolve to a stream (dangling refs); (c) synthetic tests for both: read_document and inspect_document succeed and classify the page.",
+  "note": "One bad font/XObject ref makes the whole PDF DOCUMENT_INVALID for read_document and inspect_document (pdf.rs:186-187, 311-315); contradicts C7 undecodable rule and AC3.",
+  "forbidden_expansions": [
+   "no change to unrelated PDF error paths",
+   "no new crates"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F1-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": null,
+  "note": "fetch regression: UTF-8 files with unlisted extensions (README, .tex, .srt) now UNSUPPORTED_FORMAT instead of text (documents.rs:539-552, 117)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "debug_assert! used to touch unused contract fields; pdf.page_images inside debug_assert repeats extraction (pdf.rs:600-603, filesystem.rs:591)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "Fallback unsupported hint 'save as DOCX or PDF' misleading for .docx/.eml/images/.zip pending later phases (documents.rs:117)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "Node test comment claims forged path never opened but cursor fails on root-id mismatch (test/native.test.mjs:220-223)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-N4",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "get_file_info description lacks new format field; directories get a format value",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-N5",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "read_file on UTF-8 file with non-text extension reads twice",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F1-N6",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "show() counts C1 controls as undecodable; C7 says C0 only",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "CAL-1",
+  "reviewer": "user",
+  "decision": "ACCEPTED",
+  "authorized_change": "Record final Ф1 outcome after extra probes D1-D3 (single-page scan PDFs 65384/130843/262137 bytes: D1 and D3 read correctly, D2 not read — non-monotonic, attributed to the per-chat ChatGPT 'Allow file materialization?' approval / model behaviour, not size): Outcome A+pdf; image_max=1992232; pdf_max=262137; text_max=200000. Amend C0: PAGE_PDF_MIN_USABLE lowered from 256 KiB to 128 KiB (user decision: enable the single-page PDF channel if ~128 KiB passes; 256 KiB passed), so PAGE_PDF_OUTPUT_LIMIT = min(8 MiB, 262137, max(1 MiB, 0.75*262137)) = 262137 bytes and Ф3 builds branch A+pdf. Add to Ф3 (server instructions + README requirements): ChatGPT asks the user 'Allow file materialization?' for every embedded PDF resource, approval is per chat (Allow once / Always allow for this chat); the page-PDF channel is a rare fallback only for pages whose image cannot be extracted, and the model should tell the user to approve the prompt.",
+  "note": "Calibration amendment from user's manual probes 2026-10-18",
+  "forbidden_expansions": [
+   "no change to image/text limits",
+   "no new probes or tools"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F2-PM1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "User decision 2026-10-18 ('Лимит 65 536 кодов'): add constant TOUNICODE_CODE_LIMIT = 65536. Before calling lopdf get_font_encoding_with_limit for a font with /ToUnicode, the server decodes the ToUnicode stream (under PDF_STREAM_LIMIT) and sums the code spans of all bfrange (and counts bfchar) entries with its own bounded scan; if the total exceeds TOUNICODE_CODE_LIMIT (or the scan cannot parse the ranges), the font is skipped and its glyphs counted undecodable (same path as Ф2-F1-B1); the rest of the page reads normally. Plan: amend C0 (constant row; per-call budget sentence on font maps) and C7 (font-resolution contract), Ф2 tests (synthetic 3-byte/4-byte range font skipped, 65536-code font accepted). EXTENSION (orchestrator, within plan scope — bounds per call per Global Constraints; supplements, does not replace, the user's per-font 65536): (1) a cumulative per-page ToUnicode code budget TOUNICODE_PAGE_CODE_LIMIT = 262144 (4 x 65536) counted over all fonts resolved for one page (page + forms); once exhausted, further fonts are skipped and their glyphs counted undecodable; (2) decoded ToUnicode stream bytes are charged cumulatively per page against PDF_STREAM_LIMIT (64 MiB total per page for font maps, not 64 MiB per stream), over-budget fonts skipped the same way. Plan: same sections plus one test of a page with many fonts sharing one large map / many distinct maps.",
+  "note": "Plan-mandated get_font_encoding_with_limit: lopdf ToUnicodeCMap::from_sections expands every bfrange code (cmap.rs:88-143); ~1 KB PDF -> 276.6 MiB (3-byte range) / 533.8 MiB (4-byte); per font. Not bounded by PDF_STREAM_LIMIT; breaks C0 ~220 MiB claim. pdf.rs:224-230.",
+  "forbidden_expansions": [
+   "no own full CMap decoder replacing lopdf",
+   "no new crates",
+   "no change to PDF_CONTENT_LIMIT or PDF_STREAM_LIMIT values"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F2-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Resolve each font object at most once per page (per-page cache keyed by font ObjectId passed into the walk_text recursion, covering forms that inherit page resources), so repeated Form XObject `Do` does not re-resolve encodings; add a test counting resolutions under repeated `Do` (e.g. 1000 Do with a non-trivial ToUnicode map resolves each font once).",
+  "note": "Font encodings re-resolved on every Do (pdf.rs:216-233, 326-334); 4000 Do with a 65536-code ToUnicode map -> 17.6 s, inspect_document overran SEARCH_DEADLINE without cursor. Unbounded CPU per page.",
+  "forbidden_expansions": [
+   "no change to PDF_CONTENT_LIMIT semantics",
+   "no new crates"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F2-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "Form XObject decompression failure other than size limit (unsupported filter etc.) still fails whole document (pdf.rs:323)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F2-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "Malformed page content reported as plain empty/no_text without flag; consider suspicious reason (pdf.rs:212-214)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F2-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "No synthetic test combining repeated Do with non-trivial ToUnicode map",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F3-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Closed by STRUCT-1 (user decision 2026-10-18 'Общий ограничитель').",
+  "note": "/Encoding reference chain of 129 hops bypasses ToUnicode pre-scan (pdf.rs:141 dereference DEREF_LIMIT=128 vs lopdf get_base_encoding one extra hop): 12.7 KB PDF -> 276.9 MiB",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F3-B2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Closed by STRUCT-1 (user decision 2026-10-18 'Общий ограничитель').",
+  "note": "Per-Do iteration over every /Font entry remains (pdf.rs:497-516): 1000 entries x 340k Do -> 35.9 s; 10000 entries -> >150 s",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F3-B3",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Closed by STRUCT-1 (user decision 2026-10-18 'Общий ограничитель').",
+  "note": "ToUnicode byte budget not charged on non-limit decode errors (pdf.rs:106): 300 fonts sharing a Flate+/Bogus 60 MiB stream -> 17.6 GiB inflated, 2.75 s/page",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F3-B4",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Closed by STRUCT-1 (user decision 2026-10-18 'Общий ограничитель').",
+  "note": "Unbounded q stack cloning TextState with Vec<u8> font name (pdf.rs:537,730,610): 834-byte file -> 645 MiB; within budget ~500 GiB",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F3-D1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Folded into STRUCT-1 plan amendment (C0 figures + allocator caveat).",
+  "note": "C0 per-component memory figures understated (4x65536-code maps with long targets 178.6 MiB vs 24-32; 371.8 vs 350 MiB); macOS malloc large cache footprint up to ~1/4 RAM across many large decodes",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F3-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "FontKey::Direct uses raw pointer address as scope id (pdf.rs:507)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F3-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "Implementer evidence used RUST_TEST_THREADS=1",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F3-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "font_map_guard test lacks /Encoding chain coverage",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "STRUCT-1",
+  "reviewer": "user",
+  "decision": "ACCEPTED",
+  "authorized_change": "User decision 2026-10-18 ('Общий ограничитель'), closing Ф2-F3-B1..B4 as classes: (1) one per-page work budget PDF_PAGE_WORK_LIMIT (value chosen and justified in C0 so that a maximal page completes well under SEARCH_DEADLINE on the target hardware) held in PageState, charged one unit per processed content operator, per Font/XObject/resource dict entry visited, and per decoded byte (including bytes from decodes that fail with non-limit errors — a failed ToUnicode decode also exhausts the remaining per-page ToUnicode byte budget); exceeding it stops the page, discards partial text and flags it with the existing content_too_large flag (no new API field); (2) the call's deadline is checked inside the walker every N units, not only between pages, for both inspect_document and read_document; (3) q (graphics-state) nesting capped at a constant PDF_Q_DEPTH_LIMIT (e.g. 64) — overflow treated like budget exhaustion; (4) TextState holds an interned u32 font handle, not a Vec<u8> name; (5) fonts resolved lazily on Tf through the per-page cache instead of iterating every /Font entry on each walk_text/Do; (6) the ToUnicode pre-scan runs whenever a font has /ToUnicode unless /Encoding resolves (hop-capped, e.g. 8 hops) to a definite non-Identity encoding that lopdf would use instead — an unresolvable chain means pre-scan. Plan: amend C0 (constants, budget arithmetic; also correct the per-component memory figures per Ф2-F3-D1 and note macOS malloc large-cache footprint as an operational caveat), C7 (walker contract), Ф2 Step 6/11 and tests (129-hop chain, large /Font dict x many Do bounded, failed-decode charge, long name x many q, deadline inside page). EXTENSION (orchestrator, within STRUCT-1 scope, from the plan writer's deferred observation): cap distinct font objects resolved per page at PDF_PAGE_FONT_LIMIT (e.g. 1024, justified in C0); fonts beyond the cap are not resolved and their glyphs count undecodable (bounds lopdf /Differences tables and per-font state memory per page); /Differences elements of an /Encoding reached beyond the hop cap are charged too (or such a font is treated as unresolvable/skipped).",
+  "note": "Structural guard replacing per-finding fixes",
+  "forbidden_expansions": [
+   "no process isolation (macOS sandbox denies fork)",
+   "no new crates",
+   "no change to PDF_CONTENT_LIMIT/TOUNICODE limits values",
+   "no new tool or public field beyond reusing content_too_large"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "STRUCT-1-cal",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "authorized_change": "Step 11 calibration (per C0 rule) halved PDF_PAGE_WORK_LIMIT to 2^26 = 67,108,864 (3,734-distinct-glyph /Differences page took 3.25 s at 2^27, 1.63 s at 2^26). Record the calibrated value in C0. Adapt the two Ф2 tests whose 'unflagged' expectations assumed 2^27: (a) 3 x 24 MiB ToUnicode maps and (b) failed ToUnicode decode charged 64 Mi — each runs the skip/charge behaviour under a test-only larger work budget (e.g. 2^27 via a cfg(test) override) to isolate the ToUnicode byte-budget / failed-decode logic, and additionally asserts that at the production budget the same page is flagged content_too_large. Plan text for those two tests (test strategy) updated accordingly.",
+  "note": "Fix round 3 NEEDS_AUTHORIZATION resolution",
+  "forbidden_expansions": [
+   "no change to charging rules or other limits",
+   "no exemptions for fixtures in production code"
+  ],
+  "materiality": "ACCEPTANCE_CRITERIA",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F4-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "User decision 2026-10-19 ('Ещё один раунд'): new work-unit kind — glyph-decode output is charged to PDF_PAGE_WORK_LIMIT BEFORE lopdf allocates it: the ToUnicode pre-scan records each accepted map's maximum destination length in UTF-16 units (1 for fonts without a ToUnicode map / simple encodings), and show() takes &mut PageState and charges shown bytes x that maximum (per Tj/'/\"/TJ string) before calling write_to_string; exhaustion flags content_too_large via the existing path and the in-page deadline check applies through charge(). Plan: C0 (new unit kind in PDF_PAGE_WORK_LIMIT charging rules; budget arithmetic), C7 (charging rules / show contract), Ф2 tests (long-target map + ~2 MiB shown bytes flagged with bounded work and time; ordinary fonts unaffected), Step 11 note (measurement of the reviewer's 8.9 KB fixture). EXTENSION (orchestrator, within scope, from the plan writer's deferred observation that the shared budget alone allows ~0.9 GiB glyph output and ~2.1 GiB per call): additionally cap glyph-output units per page at PDF_PAGE_GLYPH_LIMIT = 4 Mi units (4,194,304; ~56 MiB of lopdf temporaries at ~14 B/unit; real pages emit well under 100k units); exceeding it flags content_too_large like work-budget exhaustion; C0 per-call worst case restated accordingly.",
+  "note": "Glyph-decode output (lopdf UnicodeMapEncoding::write_to_string, up to 256 UTF-16 units per code, 3 temp buffers) not charged to PDF_PAGE_WORK_LIMIT (pdf.rs show(), Tj/'/\"/TJ): 8.9 KB PDF -> 3989 MiB, 8.25 s/page unflagged; inspect 3 pages 14.23 s vs 10 s deadline. Fix: charge shown bytes x accepted map's max destination length before write_to_string (needs charging-rule change). Round cap reached.",
+  "forbidden_expansions": [
+   "no change to other limits' values",
+   "no new crates",
+   "no new public fields"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F4-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": null,
+  "note": "r3_errdecode.py probe never selects its fonts; with lazy Tf it no longer exercises failed-decode charging (variant confirms behaviour)",
+  "forbidden_expansions": [],
+  "materiality": "NICE_TO_HAVE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F5-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "Glyph charge paths without unit tests: Differences-wrapped Identity-H map, page font inherited into a Form XObject, form with own font font (release probes r5_probe.py show all charged/flagged) — native/pdf.rs glyph_output_* tests",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F5-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "scan_cmap accepts destinations >256 UTF-16 units and hex strings with comments that lopdf rejects; lopdf then falls back to StandardEncoding, so the walker may overcharge/flag a page with a malformed map (safe side) — native/pdf.rs:4550-4553",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F5-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "show() looks up page_state.fonts.get(handle) twice — cosmetic — native/pdf.rs:4972-4990",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F5-B1",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "authorized_change": "User decision 2026-10-19 ('Только находка 1'): remove the unbounded lopdf::Document::load_metadata_mem preflight (pdf.rs:679). Derive encryption from the bounded load_mem_with_options: password not supplied -> lopdf keeps /Encrypt in trailer and encryption_state None -> PDF_ENCRYPTED; decrypted -> encryption_state.is_some(). Keep PDF_ENCRYPTED_LIMIT (256 MiB): before loading, only for files > 256 MiB, a cheap raw-byte search for /Encrypt -> FILE_TOO_LARGE; after loading, re-check (catches #xx-escaped names). Title/producer keep coming from the loaded /Info. Plan: Loading paragraph (~line 366), encryption detection (~line 158), Ф2 test list (~line 606): padded compressed XRef stream test (bounded / no unbounded decode), existing encrypted tests still pass.",
+  "note": "plan-mandated (codex-control): native/pdf.rs:679 load_metadata_mem runs before the bounded loader; lopdf 0.45 metadata load uses max_decompressed_size None and decompresses XRef streams / object streams -> compressed XRef can allocate beyond 64 MiB before LoadOptions/page budgets. Proposed minimal fix: bounded trailer/metadata path preserving encrypted-file size check; cover compressed XRef and metadata object streams.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no object-stream / parse-cost load guard (finding Ф2-F5-B2 is deferred)",
+   "no RSS watchdog",
+   "no change to other limits' values",
+   "no new public fields"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F5-B2",
+  "reviewer": "codex-control",
+  "decision": "DEFER",
+  "authorized_change": "User decision 2026-10-19 ('Только находка 1'): not fixed in Ф2. Plan records it as a known residual risk for crafted PDFs (object-stream overlapping offsets, ~60x Object parse amplification (size_of Object = 120), PDF_STREAM_LIMIT per stream not cumulative, duplicate xref offsets CPU) and corrects the C0 budget statements (~lines 157, 195) that claim a bounded per-call budget; revisit before Ф5 (search_text parses PDFs folder-wide). Encrypted-path residual (lopdf load_encrypted_document skips the filter) accepted and recorded ('Принять и записать').",
+  "note": "codex-control: native/pdf.rs:688 bounded full loader permits object-stream amplification: lopdf ObjectStream::new_with_limit parses each indexed offset independently, no overlap rejection; 4096 object ids -> same 1 MiB string: 11,574 B compressed, 1,076,350 B inflated (< PDF_STREAM_LIMIT), implies 4 GiB retained copies (source-derived, not measured). Proposed fix: validate object-stream spans before lopdf expands them; reject overlapping spans with DOCUMENT_INVALID; regression fixture.",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F5-B3",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "authorized_change": "User decision 2026-10-19 ('Двоичный курсор'): replace JSON-in-cursor with a compact binary layout (version, kind, h, optional fingerprint, varint u/o, each path component as varint length + raw UTF-8; base64url no pad), keeping CURSOR_MAX_LEN 2048, determinism, fingerprint/STALE_CURSOR and deletion tolerance. Invariant: every emitted cursor <= CURSOR_MAX_LEN, enforced in the walker: do not descend into a directory whose children could not be encoded (components + 255 bytes + overhead); report such directories in an explicit counter (e.g. skippedTooDeep) rather than silently. Plan: C4 (~lines 240-247), CURSOR_MAX_LEN row (~186), C5 descent rule + counter, AC6 wording exception, Ф2 tests (unit round trip 5x255 quotes and control chars; Node chain over quote-named dirs; deep-path skip counter). EXTENSION (orchestrator, plan revision 2026-10-19): the longest-possible child name is 255 bytes on macOS/Linux and 765 bytes on Windows (255 UTF-16 units x up to 3 UTF-8 bytes), so the invariant holds on Windows too; raw cursor bytes <= 1536 <=> base64url <= 2048; new WalkEntry.descend_skipped flag; skippedTooDeep integer always present (0) on list_directory, search_files, search_text.",
+  "note": "plan-mandated (codex-control): native/cursor.rs:43 cursor encode has no length limit but decode rejects >2048 bytes; 4 nested macOS dir names with 200 double quotes each (803-byte path) -> ~2251-byte cursor; list_directory(depth:5,limit:4) issues it and rejects continuation, breaking AC6 chain. Proposed fix: cursor representation / decoder / schema ceiling accommodating every emitted walk position; round-trip + traversal test for long JSON-escaped names.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no raising CURSOR_MAX_LEN",
+   "no position hashing / server-side cursor state",
+   "no unrelated walker changes"
+  ],
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F5-B2-doc",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "authorized_change": "Plan text only (user decision 2026-10-19 'Только находка 1' + 'Принять и записать'): record finding Ф2-F5-B2 as a known residual risk for crafted PDFs in the plan's Risks section and correct the C0 budget statements (~line 157 'peak memory ≈ file + parsed non-image objects', ~line 195 per-call budget) so they no longer claim a bounded load: object-stream members with overlapping/duplicate offsets each retained (lopdf object_stream.rs:89-116), ~60x parse amplification (size_of::<lopdf::Object>() = 120, e.g. flat arrays), PDF_STREAM_LIMIT is per stream not cumulative, duplicate xref offsets cost CPU per entry; encrypted PDFs bypass the load filter (lopdf load_encrypted_document) — accepted residual, bounded only by PDF_ENCRYPTED_LIMIT. Add a Non-goals/deferred line: whole-load PDF guard revisited before Ф5 (search_text parses PDFs folder-wide). No code requirement, no new constants, no tests for B2.",
+  "note": "Documentation half of the deferred Ф2-F5-B2.",
+  "forbidden_expansions": [
+   "no new load-guard requirements in Ф2",
+   "no new constants"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф2-F5-D1",
+  "reviewer": "codex-control",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "Plan reviser observation: the connector `search` tool walks with no depth limit through the same walker and would omit not-descended directories without a skippedTooDeep counter (scope named only list_directory/search_files/search_text).",
+  "forbidden_expansions": [],
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F5-D2",
+  "reviewer": "codex-control",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "Plan reviser observation for Ф5: container-listing cursor puts ZIP member components into p; ZIP names up to 65,535 bytes and the walker descent rule does not cover that listing, so those cursors could exceed CURSOR_MAX_LEN — address when Ф5 starts. → handled by Ф5-PRE-2.",
+  "forbidden_expansions": [],
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F6-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "plan-mandated (opus round 6): C4 MAX_NAME_BYTES = 255 on non-Windows is false — APFS limits names to 255 UTF-16 units, so a UTF-8 name can be up to 765 bytes (verified: mkdir 255x'я' 510 B and 255x'あ' 765 B succeed). Release binary: two nested 255x'я' dirs with ~503-byte file names -> list_directory/search_files/search_text emit a 2064-char nextCursor (1548 raw bytes) -> INVALID_CURSOR; 4 dirs x 140 Cyrillic chars + 200-char files fail too; list_directory fails at depth 3. Breaks C0 CURSOR_MAX_LEN invariant, C5:278 and AC6. Probe: scratchpad/r6_longname.py.",
+  "authorized_change": "User decision 2026-10-19 ('Проверять реальные имена', option b): replace the worst-case MAX_NAME_BYTES pre-descent rule with an exact per-child check: the walker keeps descending normally; when a directory window is read, each child's actual walk position (root id + relative components + child name, binary layout, worst-case u/o/fingerprint as the plan defines) is checked against CURSOR_MAX_LEN; a child whose position cannot be encoded is not emitted as a normal entry and is not descended into — it is reported as skipped and counted in skippedTooDeep (existing field; decide in the plan whether the skipped child is still listed with descend_skipped or omitted-and-counted, keeping 'no silent omissions' and a deterministic, resumable cursor that never needs to encode the skipped child's position). Ordinary deep paths stay fully walkable; only positions that physically cannot fit are skipped. Remove/replace the platform-specific MAX_NAME_BYTES worst-case assumption (255/765) and the 'list_directory never meets the rule on macOS/Linux' claim; update C0 CURSOR_MAX_LEN row, C4 (walk_child_fits contract), C5 (descent rule, WalkEntry.descend_skipped semantics, skippedTooDeep counting incl. resume), AC6 wording, Ф2 Steps 3/4 and tests (long Cyrillic names: 2 nested 255x'я' dirs with ~503-byte files, and 4 dirs x 140 Cyrillic + 200-char files, all three tools chain to completion with no INVALID_CURSOR and correct skippedTooDeep; existing quotes/deep/resume tests adapted). RESOLVED IN PLAN (revision 2026-10-19): child that does not fit is omitted-and-counted (not yielded, not stat'ed, not descended); count carried as WalkEntry.skipped_before (replaces descend_skipped) or WalkEvent::TailSkipped(n) at the end; Walker::new gains root_id; check runs in fill after blocked-name/lower-bound/resume filters; counted once per chain by the call that processes the event; README sentence on skippedTooDeep rewritten; search_text inaccessible-metadata path adds the count.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no raising CURSOR_MAX_LEN",
+   "no position hashing / server-side cursor state",
+   "no change to cursor binary layout beyond what the check needs",
+   "no skippedTooDeep on other tools (Ф2-F5-D1 deferred)"
+  ]
+ },
+ {
+  "id": "Ф2-F6-N1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "NIT",
+  "status": "fixed",
+  "note": "pdf::tests::padded_compressed_xref_uses_the_bounded_loader passes with or without the old load_metadata_mem preflight (both end DOCUMENT_INVALID); only Step 11(f) RSS distinguishes them.",
+  "authorized_change": "User-authorized NIT 2026-10-19 ('Тест на предзагрузку'): make the padded compressed-XRef test fail if an unbounded decode/preflight returns — e.g. a test-only counter or hook proving no decode beyond PDF_STREAM_LIMIT happens (or that load_metadata_mem is not called), so a regression is caught by cargo test. Plan: Ф2 test strategy (pdf) line for this test.",
+  "forbidden_expansions": [
+   "no new public fields",
+   "no production behavior change",
+   "no new crates"
+  ]
+ },
+ {
+  "id": "Ф2-F6-N2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "NIT",
+  "status": "fixed",
+  "note": "C0 PDF_ENCRYPTED_LIMIT row says the encrypted path is 'bounded only by this limit', but a trailer key spelled /Encr#79pt passes the raw-byte pre-check (lopdf decodes #xx, parser/mod.rs:132-138) and loads on the encrypted path up to PDF_LIMIT (512 MiB) before the post-load check returns FILE_TOO_LARGE.",
+  "authorized_change": "User-authorized wording fix 2026-10-19 ('Формулировка про шифрование'): plan text only — C0 PDF_ENCRYPTED_LIMIT row (and R17 if it repeats the claim) states that a #xx-escaped /Encrypt key bypasses the raw pre-check, so such a file is bounded by PDF_LIMIT (512 MiB) on the encrypted load path before the post-load check rejects it. No code change.",
+  "forbidden_expansions": [
+   "no code change",
+   "no new constants"
+  ]
+ },
+ {
+  "id": "Ф2-F6-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "Plan reviser observation: search WalkEvent::Inaccessible (directory read failure) is counted in skippedInaccessible when processed but carries no position, so resuming from an earlier cursor could count the same failure again. Pre-existing behavior, outside Ф2-F6-B1.",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F7-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "Source guard in production_document_loads_use_only_the_bounded_helper matches only \\bDocument::load*; misses IncrementalDocument::load_mem and aliased imports — test-only — native/pdf.rs tests",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F7-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "walk_child_fit_switches_at_the_exact_raw_cursor_limit catches encode's debug_assert! panic, printing expected panic noise under --nocapture; a shared raw-length helper would avoid it — native/cursor.rs",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф2-F7-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "Node Cyrillic/quote-named/sorted-cursor tests compare the chain union with [...expected].sort() (UTF-16 order), matching walker pre-order only for these fixtures — test/native.test.mjs",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-PRE-1",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Pre-Ф3 research (2026-10-19): ChatGPT asks 'Allow file materialization?' for every embedded PDF resource in each new chat; images arrive without prompts. Plan as written (DCT/Flate + fax G4/G3-1D) routes every JBIG2 and JPX page plus composites to the single-page-PDF channel (~15-35% of scan pages, ~100% in compressed/court bundles). Pure-Rust hayro codecs: hayro-jbig2 0.3.1 (2026-10-04; generic incl. MMR, refinement, symbol, text incl. Huffman, pattern/halftone; Image::new_embedded(data, Option<globals>)), hayro-jpeg2000 0.4.1 (2026-10-04; most of Part 1 + some Part 2 colour spaces, tiles, 16-bit->8-bit, Gray/RGB/CMYK/ICC/YCC, alpha flag, target_resolution), hayro-ccitt 0.4.0 (2026-10-04; G4, G3 1D+2D K>0, EncodedByteAlign, EndOfLine, EndOfBlock, Rows=0; zero deps). All MIT/Apache, #![forbid(unsafe_code)], MSRV 1.92; default 'simd' feature uses unsafe (fearless_simd) -> default-features = false. No allocation limits or cancellation in JBIG2/JPX (hayro issue #1052; JPX 60k dimension cap removed in 0.4.1; JBIG2 fuzz reports of 66 GB allocations). fax lacks K>0 and EncodedByteAlign. hayro-syntax cannot decode filters on raw bytes; parameter mapping (~100 lines in hayro filter/{ccitt,jbig2}.rs) may be adapted with attribution. Est. +0.4-0.7 MB binary.",
+  "authorized_change": "User decision 2026-10-19 ('hayro + редкий PDF'): Ф3 decodes JBIG2 (hayro-jbig2, with decoded JBIG2Globals), JPX (hayro-jpeg2000) and CCITTFax (hayro-ccitt, replacing the planned direct `fax` dependency for PDF; `fax` may remain transitive via `tiff`) single-image scan pages into images delivered as MCP image content, using default-features = false. The single-page-PDF channel stays, only for pages the image path cannot represent (composite pages: several images such as JBIG2 mask over JPEG/JPX background, strip images, stamps, visible text/vector content over the image, or decode failure / over-budget). Every decode is bounded by the server, since the codecs have no limits or cancellation: parse header dimensions first and reject before decoding when width x height (x components) exceeds caps tied to the existing image decode budget (e.g. IMAGE_DECODE_ALLOC), reject JBIG2 height 0xFFFFFFFF / unknown-height streams that cannot be bounded, use JPX target_resolution so the decoded buffer fits the image output limits, decode only one image per call, and state the residual (no cooperative cancellation -> a hostile file can still burn CPU for one call; acceptable like R17, record as a risk). Remove JBIG2/JPX decoding from Non-goals ('follow-up, MSRV 1.92'). Update the affected Ф3 contracts (C9 visual access / page view rules, constants, routing between image and PDF fallback), interfaces, steps, tests (synthetic JBIG2 generic + with globals, JPX gray/RGB/16-bit, CCITT G4 / G3 2D / EncodedByteAlign fixtures produced by test code or tiny committed synthetic files; oversized-dimension rejection before allocation; composite page routes to PDF fallback), dependency justification, and the per-call memory budget.",
+  "forbidden_expansions": [
+   "no C or native-library decoders (OpenJPEG, jbig2dec)",
+   "no OCR",
+   "no full PDF renderer / rasterizer and no compositing of several images in Ф3 (possible later follow-up)",
+   "no hayro-syntax / second PDF parser",
+   "no change to Ф2 behavior"
+  ]
+ },
+ {
+  "id": "Ф3-PRE-2",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "hayro codecs' current releases declare MSRV 1.92; Global Constraints fix rust-version = 1.88. CI uses stable; docs/native-verification.md records builds only with 1.98.1; local toolchain 1.99; 1.88 never tested.",
+  "authorized_change": "User decision 2026-10-19 ('Поднять до 1.92'): change the Global Constraints line to `Cargo.toml rust-version = \"1.92\"` (edition 2024 unchanged) and make Ф3 bump rust-version in Cargo.toml to 1.92 (plus any doc that states the MSRV, e.g. README / docs/native-verification.md if they mention 1.88). Use current hayro releases (hayro-jbig2 0.3.x latest, hayro-jpeg2000 0.4.x latest, hayro-ccitt 0.4.x latest), not the old pins.",
+  "forbidden_expansions": [
+   "no edition change",
+   "no MSRV beyond 1.92"
+  ]
+ },
+ {
+  "id": "Ф3-PRE-D1",
+  "reviewer": "orchestrator",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "Plan reviser observations: duplicate PageView declaration for branch C under P1-B2 may need a cfg/branch note at implementation; old plan listed fax for branch B too (B never decodes PDF page images).",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Walk all top-level JP2 boxes and reject (route to the PDF fallback, zero codec calls) a JP2 with more than one jp2c box — or validate the last jp2c exactly as hayro selects it; after Image::new require image.width()/height() (and component count) to equal the reduced SIZ the server checked, else reject. Test: two-jp2c fixture (small valid first codestream, oversized last) expects the PDF fallback / rejection with zero codec decode calls; dimension-mismatch test.",
+  "note": "JPX header caps bypassed by a JP2 with two jp2c boxes: jpx_siz stops at the first top-level jp2c (native/pdf_page.rs:779-781) while hayro-jpeg2000 0.4.1 keeps the last (jp2/mod.rs:111-113); JPX_MAX_TILES and Csiz<=4 never checked on the decoded codestream; post-Image::new check (pdf_page.rs:866-874) bounds only w*h*channels*5, not tiles; decode builds one Tile per declared tile cloning component_infos (j2c/tile.rs:118,137-140) -> ~5e7 tile records, many GiB, from a tiny PDF.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no change to other limits' values",
+   "no compositing / renderer"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф3-F1-B2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "In the JBIG2 prescan, read HGW/HGH for halftone region segments (types 20/22/23) and reject before decoding when HGW*HGH*4 > IMAGE_DECODE_ALLOC (or HGW*HGH > BILEVEL_MAX_PIXELS, whichever the plan's constants make consistent), and count the grid toward JBIG2_TOTAL_PIXELS. Within Ф3-PRE-1's 'reject from header dimensions before decoding' rule; no plan revision required — note the field in the report. Test: oversized halftone grid fixture rejected with zero codec calls; a small valid halftone region still decodes (if the existing fixtures can build one cheaply; otherwise boundary unit test of the prescan).",
+  "note": "JBIG2 halftone grid not pre-scanned: for region types 20/22/23 jbig2_prescan checks only region w*h (native/pdf_page.rs:626); HGW/HGH (4-byte fields at payload offsets 18 and 22) capped by hayro only at 65535/side (decode/halftone.rs:97); decode_bitplanes allocates vec![0u32; HGW*HGH] (gray_scale.rs:189-191) -> up to ~16 GiB plus 2 bitplanes ~512 MiB and ~4.3e9 pattern placements from a few hundred bytes. Breaks C0 JBIG2 budget and Ф3-PRE-1 header-rejection rule.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no change to other limits' values"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф3-F1-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "CCITT change lists grow with the data (hayro-ccitt lib.rs:362-368,463), not covered by header cap; Columns up to 2^28 with small Height -> 60+ MiB stream ~1 GiB change lists; page-view budget '≈ PDF + 0.7 GiB' understates. Cap Columns (e.g. <= 2^20) or correct the budget.",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-D2",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "JPEG decode memory beyond max_alloc: image crate passes only w/h limits to zune-jpeg (image-0.25.10 codecs/jpeg/decoder.rs:149-172); progressive coefficient buffers (~2 B/sample) not in IMAGE_DECODE_ALLOC (~0.8 GiB crafted). Plan-prescribed path, unmeasured.",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-D3",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "single_page_pdf removes only /Encrypt,/Info,/Prev,/XRefStm from trailer (native/pdf_page.rs:507-511); other trailer keys or page keys like /AA referencing old catalog keep other pages' objects in output. Harden: rebuild trailer with only /Root (and /ID).",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-D4",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "JPX ColorSpace check runs a second Image::new after full decode (pdf_page.rs:282); move before decode.",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-D5",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "Possible flake: Ф2 test cumulative_page_content_budget_flags_amplification_and_preserves_other_pages failed once under parallel threads (single read_document hitting deadline under contention); follow nextCursor to remove risk.",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "Page-PDF JSON reports pageCount: 1 (emitted payload); source page count may be more useful; plan wording ambiguous — native/documents.rs:577",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "region on a PDF without page silently ignored (goes to read_document route) — native/documents.rs read_file",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "not_viewable text omits page classification the plan asks for; unreachable in A+pdf build",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F1-N4",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "Visible glyphs mapped by ToUnicode to whitespace not counted as visible text, page treated as single-image (crafted files only) — native/pdf.rs:1189-1203",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F2-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Pass a target that hayro maps to level k (e.g. W>>k, H>>k floored, at least 1) or accept dims equal to the checked SIZ reduced at the level hayro actually selects (j <= k, hayro's formula), keeping the sample-budget re-check and the single-jp2c rule; the component check must accept palette expansion (Csiz 1 with a pclr palette -> 3/4 output channels) as long as the budget re-check passes. Tests: whole-page view of a JPX with non-divisible dimensions needing reduction returns Image; a palette JPX returns Image (if cheaply constructible); existing two-jp2c / mismatch tests still reject.",
+  "note": "Ф3-F1-B1 post-Image::new equality check (hayro dims == ceil(W/2^k) x ceil(H/2^k)) rejects valid JPX: hayro-jpeg2000 0.4.1 picks skipped levels as min(ilog2(W/target_w), ilog2(H/target_h)) with integer division (j2c/codestream.rs:146-161); server passes target=ceil(W/2^k), so W/target < 2^k when 2^k does not divide W -> hayro skips <= k-1 levels -> mismatch -> PDF fallback -> OUTPUT_TOO_LARGE for real scans. Every JPX page needing reduction (long side >= 4096) with non-divisible dims (A4 600 dpi odd sizes). Measured: 4961x7017 and 4961x3509 fall back; 4960x7016 -> image 1448x2048. Location native/pdf_page.rs decode_jpx_with_side. Also: palette JPX always falls back (output channels 3 != Csiz 1) though the budget re-check already bounds palette expansion.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no change to other limits' values",
+   "keep the single-jp2c rule"
+  ],
+  "materiality": "REGRESSION_FROM_AUTHORIZED_FIX",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф3-F2-B2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "In the existing JBIG2 segment prescan (page stream and JBIG2Globals), bound custom Huffman table segments (type 53) before decoding: reject (-> the existing fallback/rejection route, zero codec calls) when a type-53 segment's data length exceeds a small cap that real tables never reach, or compute the line count implied by HTLOW/HTHIGH/HTPS/HTRS and reject over a cap; state the chosen cap and its rationale in the report (real custom tables are at most a few hundred lines). Count it in the report as part of the JBIG2 prescan. Test: oversized type-53 table in globals rejected with zero codec calls; a small valid custom table (if cheaply constructible) still decodes.",
+  "note": "Reviewer DEFER promoted by orchestrator (within Ф3-PRE-1 'every decode bounded by the server, reject from headers before decoding'): JBIG2 custom Huffman table segments (type 53) are not capped — hayro-jbig2 read_custom (huffman_table.rs:192-245) adds one 8-byte line per 2 bits until HTHIGH (up to 2^31-1); line count limited only by segment bytes, and Flate-decoded JBIG2Globals may reach PDF_STREAM_LIMIT: 4 MiB zero bits (4.9 KB PDF) -> 146 MiB; 16 MiB (17 KB PDF) -> 542 MiB; ~2.1 GiB at 64 MiB (~65 KB PDF).",
+  "forbidden_expansions": [
+   "no new crates",
+   "no change to other limits' values",
+   "no plan revision in this round"
+  ],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф3-F2-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "JPX memory figure understated: JPX_SAMPLE_BYTES=5 vs ~15 B per decoded sample measured (8192^2 region k=1: 266 MiB; 4961x7017 k=0: 533 MiB; 7327^2 at budget: 802 MiB RSS from 1.3 MB PDF); page view peaks ~PDF + 0.8 GiB, not '≈ PDF + 0.7 GiB' (C0, README:659). R18(b) class. Fix plan/README figure or raise constant (plan revision).",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F2-D2",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "lopdf predictor buffers (pre-existing since Ф2): lopdf 0.45.0 allocates two Columns*Colors*BPC/8 row buffers from /DecodeParms before reading data (object.rs:1228-1239, filters/png.rs:88-94); /Columns 2^26 on 1x1 image -> 140 MiB (Ф3 raw path) and on a page content stream via inspect_document -> 140 MiB; linear in attacker i64. Route to the R17 whole-load guard revisited before Ф5.",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F2-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": "tiff_pages reads every IFD before page 1, so one over-limit or cyclic later IFD makes page 1 DOCUMENT_INVALID too (fails closed) — native/imaging.rs tiff_pages/view_file",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F3-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Resolved by Ф3-F3-S1 (JBIG2 segment-type allowlist; type 53 no longer decoded).",
+  "note": "Ф3-F2-B2 caps each type-53 segment (4096 B) but not their number; hayro-jbig2 0.3.1 keeps every parsed custom table (PageState::store_huffman_table, lib.rs:653-655); a valid 4096-byte table (HTPS=4,HTRS=1, 6537 lines PREFLEN 13) holds ~164 KB tree nodes (~40x). Measured N copies in Flate JBIG2Globals: 256 -> 2.8 KB PDF 54 MiB; 1024 -> 8.5 KB 180 MiB; 2048 -> 16 KB 348 MiB; linear, ~16340 tables at 64 MiB globals -> ~2.6 GiB from ~130 KB PDF (extrapolated). Fix: total type-53 count cap (<=16) or byte cap (<=64 KiB) across globals + page stream in jbig2_prescan (pdf_page.rs:574-656). Round 3 on a Sol phase -> escalated per review-stall rule.",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф3-F3-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "JPX with fewer decomposition levels than the view needs falls back even when a less-reduced decode fits the budget (few_n1_4961x7017 -> page PDF; few_n2_9999x7777 -> OUTPUT_TOO_LARGE; few_n3_16385x3001 -> page PDF); real encoders use >=5 levels — native/pdf_page.rs:889-920",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F3-D2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "authorized_change": "Resolved by Ф3-F3-S1 (JBIG2_MAX_SEGMENTS).",
+  "note": "JBIG2 segment count not capped: hayro keeps ~77 B per segment of >=11 bytes; 1M empty type-62 segments in globals (22 KB PDF) -> 85 MiB RSS; ~450 MiB at 64 MiB globals. From round 1; C0 lists 'segment headers' without a figure — native/pdf_page.rs:574-656",
+  "forbidden_expansions": [],
+  "materiality": "SECURITY",
+  "status": "fixed"
+ },
+ {
+  "id": "Ф3-F3-D3",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "authorized_change": "",
+  "note": "Palette JPX always decodes at full resolution (hayro jp2/mod.rs:95); palette scans above ~17.9 MP RGB / 13.4 MP CMYK fall back; peak RSS at budget edge 507 MiB RGB / 450 MiB CMYK (Ф3-F2-D1 class)",
+  "forbidden_expansions": [],
+  "materiality": "DEFER",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F3-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "authorized_change": "",
+  "note": ".max(1) on JPX targets can never take effect after the ilog2 clamp — native/pdf_page.rs:899",
+  "forbidden_expansions": [],
+  "materiality": "NIT",
+  "status": "deferred"
+ },
+ {
+  "id": "Ф3-F3-S1",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "SECURITY",
+  "status": "fixed",
+  "note": "Impasse diagnosis 2026-10-19: hayro-jbig2 0.3.1 retains state for nearly every segment type with no overall limit, so per-segment patches never converge. Pattern dictionaries (type 16) are far worse than the R18 wording: HDPW=1,HDPH=32,GRAYMAX=65534, 18 B/segment -> ~523 MiB retained each (measured: 725 B PDF -> 535 MiB; 761 B -> 1581 MiB; ~3 KB -> ~60 GiB extrapolated). Other unbounded retained items: custom tables total (53), segment records (~77 B each), text-region/symbol-dictionary temporary fan-out over referred dictionaries incl. duplicates (up to 1024 x 65535 x 8 B), per-reference table clones. Symbol bitmap sizes live inside compressed data and cannot be bounded from headers. Evidence: hayro-jbig2 lib.rs 286-543, 319, 325-331, 334-340, 358, 535, 653-655; decode/pattern.rs 26-30, 136-155; decode/symbol.rs 680-697, 816; segment.rs 203-219; probe scratchpad/f3r4_pat.py.",
+  "authorized_change": "User decision 2026-10-19 ('Белый список + модель угроз'): replace the per-type JBIG2 caps with a segment-type allowlist plus whole-call totals in the prescan (page stream + JBIG2Globals): decode only the types scan encoders emit — 0 (symbol dictionary), 6/7 (immediate text region), 38/39 (immediate generic region), 42/43 (immediate generic refinement region), 48 (page information), 49 (end of page), 50 (end of stripe), 51 (end of file), 52 (profiles), 62 (extension) — confirm the exact type numbers against hayro-jbig2 0.3.1 / ITU T.88; any other type (16 pattern dictionary, 20/22/23 halftone regions, 53 custom tables, intermediate regions 4/20/36/40, unknown/reserved types) routes the page to the single-page-PDF fallback with zero codec calls. Totals: JBIG2_MAX_SEGMENTS = 65 536; referred-to segment lists must not contain duplicates; JBIG2_MAX_SYMBOL_REFS = 2^20 = the sum over every symbol dictionary and text region of the SDNUMEXSYMS of each dictionary it refers to (from headers). Keep the existing page/region dimension caps and JBIG2_TOTAL_PIXELS. Delete the now-unreachable halftone-grid and type-53 checks (their rejection tests become allowlist rejection tests). Tests: rejection with zero codec calls for types 16, 53, 36 (intermediate), an unknown type, a duplicate referred-to segment, segment count over the cap, symbol-ref total over the cap; existing generic / symbol+text / globals fixtures still decode. Plan: C0 JBIG2 rows (new constants, budget wording), C9 JBIG2 paragraph (allowlist), R18 reworded to name exactly the remaining residual (symbol bitmap contents and re-export clones whose sizes live inside compressed data; no cooperative cancellation), Ф3 test strategy.",
+  "forbidden_expansions": [
+   "no new crates",
+   "no change to non-JBIG2 behavior",
+   "no child-process isolation (macOS sandbox denies fork)",
+   "no change to other limits' values"
+  ]
+ },
+ {
+  "id": "Ф3-F3-TM",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "User asked for a realistic threat assessment (single user, own case folders, ChatGPT read-only access to save agent quota). Assessment: accidental triggering ~0 (all found bombs need deliberately chosen header values; real encoders do not emit them; corrupted files fail early; none of the Ф2-Ф3 findings was ever hit by a real file); targeted attack ~0 (attacker must know this custom server + decoder, craft a PDF for it, deliver it, and the user must ask to view that page; payoff is only a crash/swap of a local helper — no code execution or data theft in safe Rust). The review bar 'every crafted file bounded' made Ф2 take 7 rounds and Ф3 3+ rounds.",
+  "authorized_change": "User decision 2026-10-19 ('Белый список + модель угроз'): add an explicit threat model to the plan (Global Constraints line + a short Threat model paragraph near Risks), applying to the review of Ф3 (remaining rounds), Ф4, Ф5 and the final review: (1) MUST: ordinary, accidental and corrupted/truncated real-world files never crash, hang or exhaust memory, and every limit the plan states for ordinary files holds; confidentiality / integrity / path-confinement / read-only guarantees are absolute. (2) Deliberately crafted files whose only impact is denial of service (process abort, memory pressure/swap, one long call) are an ACCEPTED residual class: a reviewer finding in this class is BLOCKING only when the fix is cheap and local (roughly a localized change of up to ~50 lines with no new mechanism, dependency or plan-wide budget) — otherwise it is DEFER and recorded as a residual in Risks. (3) Anything beyond DoS from a crafted file (code execution, reading outside roots, disclosure of another file, writes, host paths in errors) stays BLOCKING regardless of cost. Clarify that the user's Global Constraint 'Memory/time bounded per call' is interpreted under this threat model for crafted inputs. Update R17/R18 wording to reference the threat model. No change to phases' scope.",
+  "forbidden_expansions": [
+   "no removal of existing limits or guards",
+   "no change to confidentiality/read-only/path guarantees",
+   "no scope change of phases"
+  ]
+ },
+ {
+  "id": "Ф3-C1-B1",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "plan-mandated: visible annotation appearances (/Annots with /AP: stamps, Preview signatures, ink, free text) are lost. C9 step 2 eligibility counts only painted page content, so a scan with a stamp annotation is extracted as the bare scan image; the single-page PDF fallback (C9 line 522) removes page /Annots unconditionally. native/pdf_page.rs:494. Ordinary-file fidelity issue (threat-model class 1), not DoS.",
+  "authorized_change": "User decision 2026-10-19 ('Показывать'): (1) Eligibility (C9 step 2): a page with at least one visible annotation is composite (never image-extracted). Visible = an entry of page /Annots that is a dictionary with an /AP /N appearance (a stream, or a dictionary of states selected by /AS that resolves to a stream), /F without Hidden (bit 2) and NoView (bit 6), Subtype not /Popup, and a non-degenerate /Rect. Annotations without an appearance (e.g. bare /Link) do not count. (2) Fallback (C9 single-page PDF, line ~522): instead of removing page /Annots unconditionally, keep only the visible annotations as defined above, each rebuilt with a key allowlist — /Type, /Subtype, /Rect, /AP (only /N, plus /AS when /N is a state dictionary), /F, /AS, /Border, /BS, /C, /CA, /BM — dropping everything else (/A, /AA, /Parent, /Popup, /P, /IRT, /OC, /Contents, /T, form-field keys, JavaScript). Their appearance streams and resources go through the same sanitization and object-graph copy as page content (no actions, no external references); the output-size ceiling and existing caps apply unchanged. All other annotations (hidden, popups, no appearance) are removed as today. Branch A (no PDF fallback) returns the existing NotViewable route. Tests: a synthetic scan page with a visible stamp annotation (with /AP and an /A action) → not image-extracted; the fallback PDF keeps that annotation with its /AP and without /A / /AA / /Popup / /Parent; a page with only a hidden annotation, a Popup, or an appearance-less Link is still image-extracted.",
+  "forbidden_expansions": [
+   "no rasterizer / flattening",
+   "no new crates",
+   "no AcroForm in the fallback catalog",
+   "no change to other limits"
+  ]
+ },
+ {
+  "id": "Ф3-C1-B2",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "plan-mandated: the visual walker ignores clipping (W / W*), so `0 0 32 8 re W n 64 0 0 8 0 0 cm /Im Do` returns the whole 64x8 image although only the left half is visible. native/pdf.rs:817. C9 eligibility rule does not mention clipping. Proposed minimal fix (any W -> fallback) risks pushing ordinary scans whose producers emit a full-page clip into the PDF fallback.",
+  "authorized_change": "User decision 2026-10-19 ('Умная проверка'): the visual walk (page_paint, C7 extension) tracks clipping as part of the graphics state (saved/restored by q/Q). A clip is admissible only when its path is exactly one rectangle (`re` then `W n` or `W* n`, no other path construction ops in that path); any other clip path (curves, several subpaths, lines, a W without n, etc.) makes the page composite. A Form XObject's /BBox (under the form's /Matrix and the CTM at its Do) is also a rectangular clip. At the single image's `Do`, the image's placed bounding box (unit square under the CTM) must lie inside every clip rectangle in effect, each in the same user space transformed to page space (axis-aligned bounding boxes of the transformed rectangles; tolerance 0.5 units); otherwise the page is composite (→ the existing fallback). A clip rectangle that is rotated/skewed is handled through its transformed bounding box only if it fully contains the image; containment fails → composite. Tests: full-page clip `0 0 W H re W n` around a full-page scan → still image-extracted; `0 0 32 8 re W n 64 0 0 8 0 0 cm /Im Do` → composite/fallback; non-rectangular clip → composite; clip inside a Form XObject and a form /BBox smaller than the image → composite; clip restored by Q before Do → extracted. [Superseded detail: the revised plan (2dad856, authoritative) routes any clip under a non-axis-aligned CTM to composite instead of comparing transformed bounding boxes.]",
+  "forbidden_expansions": [
+   "no cropping of the image to the clip",
+   "no rasterizer",
+   "no MediaBox/CropBox changes",
+   "no change to other limits"
+  ]
+ },
+ {
+  "id": "Ф3-C1-D1",
+  "reviewer": "orchestrator",
+  "decision": "DEFER",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "deferred",
+  "note": "Plan writer observation: text render modes 4–7 clip from ET on; C9 allows invisible 7 Tr OCR text; glyph clips are not counted by page_paint. Fidelity edge case, not raised by a reviewer."
+ },
+ {
+  "id": "Ф3-C1-D2",
+  "reviewer": "orchestrator",
+  "decision": "DEFER",
+  "materiality": "SECURITY",
+  "status": "deferred",
+  "note": "Plan writer observation: single-page fallback (prepare_page) does not remove page-level /AA and does not handle reference XObjects (/Ref) in page or appearance Form XObjects. Pre-existing; the fallback PDF is consumed by ChatGPT's renderer, not a viewer that executes actions. Revisit in the final review."
+ },
+ {
+  "id": "Ф3-F5-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Non-integer /F (e.g. 4.0) or indirect /Rect elements make an annotation count as invisible; pdf.js would still show it. native/pdf_page.rs:504-521. Real producers write direct /F 4 and numbers."
+ },
+ {
+  "id": "Ф3-F5-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Test gaps: entry-only 129-hop chain under a direct /Annots not tested separately; only a positive W* test (cutting W* verified by probe)."
+ },
+ {
+  "id": "Ф4-PRE-1",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Implementer BLOCKED; Opus diagnosis PLAN_WRONG (mechanical crate facts, no product decision). mail-parser 0.11.9 decodes IBM866 only with feature full_encoding (src/decoders/charsets/multi_byte.rs:127-136); otherwise from_utf8_lossy garbles Cyrillic. full_encoding adds only optional encoding_rs 0.8 already in the tree (lopdf, calamine, codepage, quick-xml, direct dep); licence approved; MSRV 1.88; measured release size +1.5 KB.",
+  "authorized_change": "Plan: C10 replace 'Native charsets cover koi8-r, cp1251, ibm866 and iso-8859-5; no `full_encoding` feature is needed' with the fact that koi8-r/cp1251/iso-8859-5 are native and IBM866 needs `full_encoding` (adds only encoding_rs, already in the tree; +1.5 KB); Ф4 step 1 dependency line becomes `mail-parser = { version = \"0.11\", features = [\"full_encoding\"] }` with that justification. Code: enable the feature.",
+  "forbidden_expansions": [
+   "no other mail-parser features",
+   "no new crates"
+  ]
+ },
+ {
+  "id": "Ф4-PRE-2",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "GUARANTEED_FAIL",
+  "status": "fixed",
+  "note": "cfb::CompoundFile::create writes a v4 compound file; with a Workbook stream >= 4096 bytes there is no mini stream, root entry starts at ENDOFCHAIN, and calamine 0.36.1 cfb.rs:136 rejects it (Cfb(EmptyRootDir)) — would break nearly every real .xls. Also C10 states calamine RecordIter appends CONTINUE data to rgce; in 0.36.1 (xls.rs:1309-1345, 663) CONTINUE data is kept separately — charging it overcounts (safe), no code change.",
+  "authorized_change": "Plan: C10 'XLS container' — `cfb::CompoundFile::create_with_version(cfb::Version::V3, std::io::Cursor<Vec<u8>>)` with the reason; correct the CONTINUE/rgce sentence (charging CONTINUE bytes is a safe overcount). Code: use create_with_version(V3) in xls_copy; regression assertion that a Workbook stream > 4096 bytes opens through sheets::open.",
+  "forbidden_expansions": [
+   "no change to XLS limits",
+   "no new crates"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "SECURITY",
+  "status": "fixed",
+  "note": "Labelled plan-mandated by the reviewer, but the plan (C10) mandates matching calamine's BIFF version; the code deviates. native/sheets.rs:497 old_biff = version < 0x0600, while calamine 0.36.1 parse_bof (xls.rs:723-747) uses pre-BIFF8 token sizes only for versions 0x0002/0x0007/0x0200/0x0300/0x0400/0x0500 or version 0 with dt == 0x1000; everything else is BIFF8. Probe: BOF 0x0000/0x0001 7.7 MB XLS accepted at 743 MiB peak (> 448 MiB budget); linear to ~6 GB at SHEET_LIMIT. Mandated bound → SPEC failure.",
+  "authorized_change": "Compute old_biff exactly as calamine parse_bof (incl. dt check; dt = 0 when the BOF record is shorter than 4 bytes). Add regression cases with BOF version 0 (dt 5) and 0x0001 to the formula-charge tests and to xls_formula_memory_budget's samples.",
+  "forbidden_expansions": [
+   "no change to XLS limits' values"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "GUARANTEED_FAIL",
+  "status": "fixed",
+  "note": "Any XLSX with a chart sheet → DOCUMENT_INVALID: open_with_limits (native/sheets.rs:668-670) maps calamine's NotAWorksheet from worksheet_cells_reader to invalid(); calamine itself treats it as an empty range (xlsx/mod.rs:2654-2665). Ordinary Excel output.",
+  "authorized_change": "Treat non-worksheet sheets (sheet.typ != SheetType::WorkSheet) or Err(XlsxError::NotAWorksheet(_)) as empty sheets, mirroring calamine (the sheet still appears in sheet lists / inspect as empty or as a chart sheet per the existing JSON shape — no new fields). Unit test with a chartsheet part.",
+  "forbidden_expansions": [
+   "no chart content extraction",
+   "no new JSON fields"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B3",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "SECURITY",
+  "status": "fixed",
+  "note": "Crafted DoS, cheap fix: body-level nested w:ins/w:del around paragraphs make the revision stack prefix every later paragraph (native/docx.rs:189-191, 219-238, 322-324): 997 B DOCX → 413.5 MB peak, unbounded.",
+  "authorized_change": "Cap the open revision-mark stack depth (e.g. 8): marks beyond the cap are neither pushed nor rendered (counts unaffected or counted once), and parsing continues — do NOT reject the document (real producers may emit schema-invalid body-level marks; ordinary files must keep reading). Test: deeply nested body-level w:ins around many paragraphs stays within a small output/memory bound; ordinary run-level w:ins/w:del rendering unchanged.",
+  "forbidden_expansions": [
+   "no DOCUMENT_INVALID for this case",
+   "no new C0 limit"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B4",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "GUARANTEED_FAIL",
+  "status": "fixed",
+  "note": "Promoted from reviewer NIT: XLS DIMENSIONS with rl == rf is rejected (native/sheets.rs:547), but an empty sheet's DIMENSIONS has rwMic == rwMac (e.g. default empty Sheet2/Sheet3), so ordinary XLS workbooks with an empty sheet would fail; calamine handles rl == rf harmlessly.",
+  "authorized_change": "Reject only rl < rf (and the analogous column check only for last < first); rl == rf means zero rows and is accepted. Regression test: an XLS with an empty sheet (DIMENSIONS 0,0,0,0) opens and shows the sheet as empty.",
+  "forbidden_expansions": [
+   "no change to extent caps"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B5",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Promoted from reviewer DEFER (ordinary-file fidelity for a lawyer): paragraph-mark revisions (w:pPr/w:rPr/w:ins|w:del) render as {++++}/{----} at paragraph start and double the insertion/deletion counts (probe: one inserted paragraph → '{++++}{++Новый абзац++}', insertions 2). native/docx.rs:219-238.",
+  "authorized_change": "Paragraph-mark revision elements inside w:pPr/w:rPr produce no inline markers and are not counted in insertions/deletions (only run-level content revisions are). Test: one inserted paragraph with tracked paragraph mark → '{++Новый абзац++}', insertions 1.",
+  "forbidden_expansions": [
+   "no new counters or JSON fields"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B6",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Promoted from reviewer DEFER: XLSX extent counts empty styled cells (DataRef::Empty), which calamine's value range skips: trailing empty rows/columns are printed and rows inflated (probe: one data row + empty styled cells to Z2000 → rows 2000, columns 26); a formatting-only block > 4M cells gets FILE_TOO_LARGE. Common in template-style sheets. native/sheets.rs:672-675.",
+  "authorized_change": "Exclude DataRef::Empty (value-less styled cells) from the XLSX extent/row/column computation, provided calamine's worksheet_range allocation is driven only by value cells (verify in calamine 0.36.1; if calamine's allocation does depend on empty cells, keep counting them for the cap and only trim the printed/inspected extent to the last value cell). Test: the styled-empty probe reports rows 1 / columns = last value column and prints no empty trailing rows.",
+  "forbidden_expansions": [
+   "no change to the cap values"
+  ]
+ },
+ {
+  "id": "Ф4-F1-B7",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Promoted from reviewer CANNOT_VERIFY (cannot run Windows here): ExactBuffer::write (native/sheets.rs:46-55) calls reserve_exact on every ~8 KiB write, one realloc per chunk; on Windows HeapReAlloc of large blocks may copy each time → multi-second stall on large ordinary XLSX.",
+  "authorized_change": "Grow the buffer geometrically (e.g. double, never beyond the part's limit), or reserve once up front from the entry's declared uncompressed size clamped to the limit; keep the hard limit check exactly as now.",
+  "forbidden_expansions": [
+   "no change to limits"
+  ]
+ },
+ {
+  "id": "Ф4-F1-P1",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Plan C0 sheet memory statement is wrong: calamine worksheet_range holds sparse and dense ranges together; measured ordinary numeric XLSX: 449 MiB (3.92M cells / 150 MB XML) and 474.7 MiB (3.96M cells / 198 MB XML) vs the stated ~128 MiB for 4M cells and the 448 MiB per-call figure.",
+  "authorized_change": "Plan text only: correct the C0 statement for XLSX/XLS sheet memory with the measured figures (≈ 475 MiB peak at the 4M-cell cap on ordinary files) and state the per-call budget for sheets accordingly (e.g. ≤ 512 MiB), noting the measurement; no limit values change.",
+  "forbidden_expansions": [
+   "no limit value changes",
+   "no code change"
+  ]
+ },
+ {
+  "id": "Ф4-F1-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "deferred",
+  "note": "DOCX per-paragraph overhead ~780 B (serde_json locator map): 9.5 KB DOCX with 1M empty paragraphs → 789 MB; ordinary docs far below. Crafted residual — record in Risks. native/docx.rs:331-335. Recorded in plan Risks R19/R20."
+ },
+ {
+  "id": "Ф4-F1-D2",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "deferred",
+  "note": "zip builds central-directory metadata before the ZIP_ENTRY_LIMIT check (plan's chosen order); zip 8.6.0 caps the reservation at the directory offset. Crafted residual — record in Risks. Recorded in plan Risks R19/R20."
+ },
+ {
+  "id": "Ф4-F1-D3",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "deferred",
+  "note": "CANNOT_VERIFY: MSRV 1.92 build (mail-parser/hashify edition 2024; slice::as_chunks 1.88, Option::is_none_or 1.82) and Windows x64 MSVC build — no rustup/target on this host (Homebrew rustc 1.99). Verify at Ф5 release / docs/windows-validation.md."
+ },
+ {
+  "id": "Ф4-F1-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "Encrypted XLS (FILEPASS 0x002F) gives FILE_TOO_LARGE/DOCUMENT_INVALID instead of an encrypted message. native/sheets.rs:496-506."
+ },
+ {
+  "id": "Ф4-F1-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "MSG fixed() reads PtypInteger32 as u64; non-zero padding → silent cp1251 fallback. native/msg.rs:75-88."
+ },
+ {
+  "id": "Ф4-F1-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "Body-level commentRangeStart outside a paragraph dropped while commentRangeEnd emits '==}[cN]'. native/docx.rs:239-243."
+ },
+ {
+  "id": "Ф4-F1-N4",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "shared_strings re-emits sst attributes in double quotes from raw values (theoretical break). native/sheets.rs:116-121."
+ },
+ {
+  "id": "Ф4-F1-N5",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "Test gap: CONTINUE-split padded FORMULA not asserted to be charged its concatenated length. native/sheets.rs:1259-1276."
+ },
+ {
+  "id": "Ф4-F1-N6",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "README: 'shared strings до 64 МиБ / 48 записей' unclear."
+ },
+ {
+  "id": "Ф4-F1-N7",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "materiality": "",
+  "status": "deferred",
+  "note": "MailDocument::unit returns INVALID_CURSOR vs DOCUMENT_INVALID elsewhere. native/email.rs:177."
+ },
+ {
+  "id": "Ф4-F2-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "B4 stricter than calamine: rejects DIMENSIONS (1,0,0,0), (0,5,5,2), (0,0,3,0) that calamine reads; no known writer emits them. native/sheets.rs:567-572. ~3-line fix if wanted."
+ },
+ {
+  "id": "Ф4-F2-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "B2 half-covered: a WorkSheet-typed part without <sheetData> → NotAWorksheet → DOCUMENT_INVALID; calamine returns empty. Not ordinary output (schema requires sheetData). native/sheets.rs:693-696."
+ },
+ {
+  "id": "Ф4-F2-N3",
+  "reviewer": "opus-review (promoted by orchestrator)",
+  "decision": "ACCEPTED",
+  "status": "fixed",
+  "note": "DOCX tracked inserted table row (w:trPr/w:ins) counted in insertions/author on top of its run-level w:ins → insertions 2 for one row. native/docx.rs:221-222; add trPr to the property arm.",
+  "authorized_change": "Tracked table-row revisions (w:trPr/w:ins|w:del) are property-level like paragraph marks (Ф4-F1-B5): add trPr to the property arm so they render nothing and are not counted; run-level revisions inside the row still count. Test: one tracked inserted row → insertions 1."
+ },
+ {
+  "id": "Ф4-F2-N4",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Stale comment '448 MiB' in xls_formula_memory_budget (C0 now ≤ 512 MiB). native/sheets.rs:1648-1653."
+ },
+ {
+  "id": "Ф4-F2-N5",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "ExactBuffer name misleading after geometric growth. native/sheets.rs:43-45."
+ },
+ {
+  "id": "Ф4-C1-B1",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Orphan BIFF STRING records bypass the 4M-cell range bound: the pre-scan charges their text but no cell position; calamine inserts them at its initial formula position (0,0). Orphan STRING + NUMBER at IV65536 + DIMENSIONS covering only that number passes as one cell, calamine allocates 16,777,216 cells. native/sheets.rs:606. Mandated C0/C10/R7 bound; corrupted files can produce it; cheap fix.",
+  "authorized_change": "In the XLS pre-scan, track whether a FORMULA record has appeared in the current sheet substream and reject a STRING record that precedes any FORMULA as DOCUMENT_INVALID (or, if calamine's semantics make (0,0) the cell, include (0,0) in the extent — choose the option that matches calamine 0.36.1 exactly and keeps ordinary files readable). Regression test for the orphan-STRING + IV65536 sequence.",
+  "forbidden_expansions": [
+   "no change to limit values"
+  ]
+ },
+ {
+  "id": "Ф4-C1-B2",
+  "reviewer": "codex-control",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "plan-mandated: C10 specifies mail-parser body_text(0), which returns only the first selected text body part. Ordinary multipart/mixed mail (e.g. Apple Mail text–inline attachment–text) has several inline text parts in text_body; every part after the first is silently dropped and no cursor recovers it (AC2 complete text). native/email.rs:78.",
+  "authorized_change": [
+   "User decision 2026-10-19 ('Читать все части'): EML body = every entry of mail-parser's text_body selection in order (body_text(0), body_text(1), … for i in 0..text_body.len(); for parts that exist only as HTML, the existing HTML→text conversion of the plan, i.e. what body_text(i) returns), joined with a blank-line separator and flowing into the existing paragraph units and cursor chain; alternative representations of the same content (multipart/alternative text vs html) are NOT duplicated — rely on mail-parser's text_body selection, which already picks one alternative. Attachments' handling unchanged. Plan C10 sentence naming body_text(0) is corrected accordingly. Test: a multipart/mixed message with text part 1, an inline attachment, text part 2 → both texts present in order across a complete cursor chain; a multipart/alternative message → text appears once."
+  ],
+  "forbidden_expansions": [
+   "no attachment content reading (Ф5)",
+   "no new JSON fields"
+  ]
+ },
+ {
+  "id": "Ф4-F3-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "materiality": "SECURITY",
+  "status": "deferred",
+  "note": "EML/MSG analog of R19: each mail body paragraph is its own Unit with a serde_json locator (~800 B), native/email.rs:131-140. Synthetic 5 MB EML with 1M empty paragraphs → 814 MiB peak; ~10 GB at EML_LIMIT. Ordinary mail far below. Crafted residual — extend plan R19 to EML/MSG at the next plan revision."
+ },
+ {
+  "id": "Ф4-F3-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "bodySource 'none' when the first text_body entry is an inline image (native/email.rs:50); take the label from the first Text/Html entry."
+ },
+ {
+  "id": "Ф4-F3-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Stray blank line where body parts join when a part ends in CRLF (native/email.rs:56-63,131); trim trailing line breaks before joining."
+ },
+ {
+  "id": "Ф5-PRE-1",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "PLAN_ACCEPTANCE",
+  "status": "fixed",
+  "note": "Pre-Ф5 revisit of R17 (whole-load lopdf guard), required by the plan's Non-goals line ('revisited before Ф5, because Ф5 search_text parses PDFs folder-wide'). Under the user's threat model (Ф3-F3-TM) R17 is crafted-file DoS only; a whole-load guard is a new mechanism (not cheap/local), ordinary PDFs are unaffected.",
+  "authorized_change": "Plan text only: record the revisit outcome — R17 stays an accepted residual under the threat model for Ф5 too (search_text parses each PDF with the same bounded loader, one file at a time under the existing semaphore and deadline); update the Non-goals line and R17 accordingly. No code.",
+  "forbidden_expansions": [
+   "no whole-load guard",
+   "no code"
+  ]
+ },
+ {
+  "id": "Ф5-PRE-2",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "GUARANTEED_FAIL",
+  "status": "closed",
+  "note": "Ф2-F5-D2 (deferred to Ф5 start): container-listing cursors put ZIP member path components into the cursor; ZIP names reach 65,535 bytes and the walker's exact per-child fit rule (walk_child_fits) does not cover container listings, so such cursors could exceed CURSOR_MAX_LEN (2048 encoded) → cursor encode failure / unusable continuation.",
+  "authorized_change": "Plan: in the Ф5 container listing (ZIP members, email attachments via '::'), apply the same exact rule as the folder walker — before yielding a member, compute the exact encoded length of the cursor that would point at it; a member whose cursor cannot fit within CURSOR_MAX_LEN is omitted (not yielded, not opened) and counted once in skippedTooDeep (the field the listing already returns); likewise a '::' path argument whose cursor cannot fit is handled per the existing too-deep rule. Tests: a ZIP with a member name long enough that its cursor exceeds the limit → omitted and counted; ordinary members listed and resumable.",
+  "forbidden_expansions": [
+   "no change to CURSOR_MAX_LEN or the cursor format",
+   "no new response fields"
+  ]
+ },
+ {
+  "id": "Ф5-F1-B1",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "SECURITY",
+  "status": "fixed",
+  "note": "CONTAINER_DEPTH (3 '::' levels) not enforced on listing/inspection: list_directory on a container at depth 3 (a.zip::nested.zip::b.zip::c.zip) opens it and returns depth-4 paths marked readable:true that every reader then rejects with NESTING_TOO_DEEP; inspect_document likewise emits depth-4 attachment paths (EML/MSG) and counts depth-4 ZIP entries. native/documents.rs:332 (list_container), :928 (ZIP inspect), :995 (attachment_paths).",
+  "authorized_change": "When the opened container is already at depth CONTAINER_DEPTH (opened.location.members.len() >= CONTAINER_DEPTH) and its format is ZIP/EML/MSG: list_container returns NESTING_TOO_DEEP; inspect_document does not emit or count child addresses beyond the cap (return NESTING_TOO_DEEP for the child listing part, or omit the child paths — consistent with the plan's C11 wording). Tests: listing and inspect of a container at depth 3 → no depth-4 address emitted; depth ≤2 containers still list.",
+  "forbidden_expansions": [
+   "no change to CONTAINER_DEPTH value",
+   "no new response fields",
+   "no other listing behaviour changes"
+  ]
+ },
+ {
+  "id": "Ф5-F1-B2",
+  "reviewer": "opus-review",
+  "decision": "ACCEPTED",
+  "materiality": "SPEC",
+  "status": "fixed",
+  "note": "README 'OCR и конвертация' section misses the plan-mandated third point (Ф5 step 7): making text/Markdown copies of scans stays the user's choice, originals untouched. README.md:105.",
+  "authorized_change": "Add one sentence to that README section stating that text/Markdown copies of scans (made by the user with their own tools) remain the user's choice and the originals stay as they are.",
+  "forbidden_expansions": [
+   "docs only; no other README rewrites"
+  ]
+ },
+ {
+  "id": "Ф5-F1-B3",
+  "reviewer": "orchestrator",
+  "decision": "ACCEPTED",
+  "materiality": "GUARANTEED_FAIL",
+  "status": "fixed",
+  "note": "Promoted from opus NIT: docs/windows-validation.md:70 verifier command still names Strigov-Local-MCP-2.1.2-windows-x64.zip; the user-run Windows verification step (Ф4-F1-D3) for 2.2.0 would point at the wrong archive.",
+  "authorized_change": "Update the archive name/version in docs/windows-validation.md to 2.2.0 (any other stale 2.1.2 release references in that file's commands).",
+  "forbidden_expansions": [
+   "docs only"
+  ]
+ },
+ {
+  "id": "Ф5-F1-D1",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "status": "deferred",
+  "note": "Crafted long-name ZIP listing builds all entries (components + path strings, up to 5 levels) before the cursor-fit check; memory ~5-10x central-directory name bytes. Crafted DoS only; real bound needs a name-bytes cap (new mechanism) → residual next to R20. native/documents.rs:379-413"
+ },
+ {
+  "id": "Ф5-F1-D2",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "status": "deferred",
+  "note": "by_index_raw reads every local header; one corrupted header fails the whole listing (ZIP_INVALID) and reads of later members. Explicit error, no crash/hang; per-member degradation possible later. native/archive.rs:103,125"
+ },
+ {
+  "id": "Ф5-F1-D3",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "status": "deferred",
+  "note": "Pre-existing since 2.1: read_file on a ZIP (disk or member) returns the whole container blob up to 15 MiB including blocked members (.env, keys). With '::' access now present, decide whether to refuse raw ZIP blobs. Out of Ф5 scope — user decision."
+ },
+ {
+  "id": "Ф5-F1-D4",
+  "reviewer": "opus-review",
+  "decision": "DEFER",
+  "status": "deferred",
+  "note": "Attachment names go through ZIP name rules (drive letter at byte 2, '..', '::'), so names like '1: протокол.pdf' or legacy 'C:\\...\\file.pdf' are unreadable although attachments are index-addressed. Follows plan C11; consider relaxing for attachments."
+ },
+ {
+  "id": "Ф5-F1-N1",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Attachment listing sorts index lexicographically (1,10,11,12,2…); inspect uses numeric order. native/documents.rs:440"
+ },
+ {
+  "id": "Ф5-F1-N2",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Unnamed attachment → 'attachment' with format Other; unnamed application/pdf not readable as PDF. native/email.rs attachment_info"
+ },
+ {
+  "id": "Ф5-F1-N3",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "Opened::into_bytes copies in-memory sources (transient double hold). native/documents.rs:185"
+ },
+ {
+  "id": "Ф5-F1-N4",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "docs/distribution-readme.txt version bump outside Ф5 file list — harmless release hygiene."
+ },
+ {
+  "id": "Ф5-F1-N5",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "list_directory on 'letter.eml::7' returns NOT_A_CONTAINER instead of MEMBER_NOT_FOUND (prefix fallback runs for EML/MSG parents)."
+ },
+ {
+  "id": "Ф5-F1-N6",
+  "reviewer": "opus-review",
+  "decision": "NIT",
+  "status": "deferred",
+  "note": "MSG OLE attachments (method 6, 3701000D storage) reported as 'embedded Outlook message'."
+ }
+]

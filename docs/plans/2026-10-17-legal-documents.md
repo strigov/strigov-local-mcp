@@ -1,5 +1,6 @@
 ---
 slug: legal-documents
+orca_run: run_29e905388f88
 created: 2026-10-17
 status: in-progress
 risk_phases: { Ф1: [SECURITY], Ф2: [SECURITY], Ф3: [SECURITY], Ф4: [SECURITY], Ф5: [SECURITY] }
@@ -22,8 +23,9 @@ phases:
     status: done
     commits: "bb891e9.."
   - id: Ф5
+    implementer: luna
     scope: "ZIP members and email attachments via '::' paths, bounded search inside documents, release 2.2.0"
-    status: in-progress
+    status: done
 ---
 
 # Lawyer case folders: documents, scans and continuation
