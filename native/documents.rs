@@ -200,12 +200,9 @@ impl Opened {
         Ok(bytes)
     }
 }
-pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened> {
-    let disk = filesystem::relative(raw)?;
-    let real = root.resolve(raw)?;
-    let name = filesystem::display(&real);
-    let format = format_of(&name);
-    let limit = match format {
+pub(crate) const CONTAINER_DEPTH: usize = 3;
+pub(crate) fn format_limit(format: Format) -> u64 {
+    match format {
         Format::Text => TEXT_READ_LIMIT,
         Format::Pdf => pdf::PDF_LIMIT,
         Format::Docx => docx::DOCX_LIMIT,
@@ -214,19 +211,302 @@ pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened> {
         Format::Msg => msg::MSG_LIMIT,
         Format::Image(_) => imaging::IMAGE_SOURCE_LIMIT,
         _ => u64::MAX,
-    };
-    let (file, fingerprint) = root.open_file(&real, limit)?;
-    Ok(Opened {
-        location: Location {
-            root: root_id.into(),
-            disk,
-            members: vec![],
-        },
-        name,
-        format,
-        size: fingerprint.size,
-        fingerprint,
-        source: Source::File(BufReader::new(file)),
+    }
+}
+pub(crate) fn check_attachment(info: &email::AttachmentInfo) -> Result<()> {
+    if filesystem::blocked(Path::new(&info.name.replace('\\', "/"))) {
+        return Err(error(
+            "BLOCKED_PATH",
+            "Credential or service path is blocked",
+        ));
+    }
+    let name = crate::archive::normalize_name(&info.name)
+        .ok_or_else(|| error("UNSAFE_MEMBER_NAME", "Unsafe attachment name"))?;
+    if filesystem::blocked(Path::new(&name)) {
+        return Err(error(
+            "BLOCKED_PATH",
+            "Credential or service path is blocked",
+        ));
+    }
+    if info.size
+        > crate::archive::MEMBER_LIMIT.min(format_limit(if info.embedded_message {
+            Format::Eml
+        } else {
+            format_of(&info.name)
+        }))
+    {
+        return Err(error(
+            "FILE_TOO_LARGE",
+            "Attachment exceeds the format size limit",
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened> {
+    guarded(|| {
+        let parts: Vec<_> = raw.split("::").collect();
+        if parts.len() > CONTAINER_DEPTH + 1 {
+            return Err(error(
+                "NESTING_TOO_DEEP",
+                "At most three container levels are supported",
+            ));
+        }
+        let disk = filesystem::relative(parts[0])?;
+        let real = root.resolve(parts[0])?;
+        let name = filesystem::display(&real);
+        let format = format_of(&name);
+        let (file, fingerprint) = root.open_file(&real, format_limit(format))?;
+        let mut opened = Opened {
+            location: Location {
+                root: root_id.into(),
+                disk,
+                members: vec![],
+            },
+            name,
+            format,
+            size: fingerprint.size,
+            fingerprint,
+            source: Source::File(BufReader::new(file)),
+        };
+        for member in &parts[1..] {
+            let mut location = Location {
+                root: opened.location.root.clone(),
+                disk: opened.location.disk.clone(),
+                members: opened.location.members.clone(),
+            };
+            let (name, bytes, component, embedded) = match opened.format {
+                Format::Zip => {
+                    let name = crate::archive::normalize_name(member)
+                        .filter(|n| !n.is_empty())
+                        .ok_or_else(|| error("UNSAFE_MEMBER_NAME", "Unsafe ZIP member name"))?;
+                    let (info, bytes) = crate::archive::read_member(
+                        opened.source,
+                        &name,
+                        format_limit(format_of(&name)),
+                    )?;
+                    (info.name.clone(), bytes, info.name, false)
+                }
+                Format::Eml | Format::Msg => {
+                    if member.is_empty() || !member.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(error("MEMBER_NOT_FOUND", "Use a decimal attachment index"));
+                    }
+                    let index: usize = member
+                        .parse()
+                        .map_err(|_| error("MEMBER_NOT_FOUND", "Invalid attachment index"))?;
+                    let (info, bytes) = if opened.format == Format::Eml {
+                        email::eml_attachment(&opened.into_bytes(email::EML_LIMIT)?, index)?
+                    } else {
+                        msg::msg_attachment(opened.source, index)?
+                    };
+                    let name = crate::archive::normalize_name(&info.name)
+                        .ok_or_else(|| error("UNSAFE_MEMBER_NAME", "Unsafe attachment name"))?;
+                    (name, bytes, index.to_string(), info.embedded_message)
+                }
+                _ => {
+                    return Err(error(
+                        "NOT_A_CONTAINER",
+                        "Selected member is not a container",
+                    ));
+                }
+            };
+            // Every post-disk level is bytes only. No member ever reaches RootDir.
+            // Preserve the outer on-disk fingerprint across the entire chain.
+            location.members.push(component);
+            opened = Opened {
+                location,
+                format: if embedded {
+                    Format::Eml
+                } else {
+                    format_of(&name)
+                },
+                name,
+                size: bytes.len() as u64,
+                fingerprint,
+                source: Source::Memory(std::io::Cursor::new(bytes)),
+            };
+        }
+        Ok(opened)
+    })
+}
+fn check_child_depth(opened: &Opened) -> Result<()> {
+    if opened.location.members.len() >= CONTAINER_DEPTH
+        && matches!(opened.format, Format::Zip | Format::Eml | Format::Msg)
+    {
+        return Err(error(
+            "NESTING_TOO_DEEP",
+            "At most three container levels are supported",
+        ));
+    }
+    Ok(())
+}
+/// Container listings use the same Walk position semantics as filesystem listings.
+pub(crate) fn list_container(root: &RootDir, root_id: &str, args: &Value) -> Result<Value> {
+    guarded(|| {
+        let deadline = call_deadline();
+        let raw = string(args, "path", None)?;
+        let (opened, prefix) = match open(root, root_id, raw) {
+            Ok(opened) => (opened, String::new()),
+            Err(e) if e.code == "MEMBER_NOT_FOUND" => {
+                let (parent, prefix) = raw.rsplit_once("::").ok_or(e)?;
+                let opened = open(root, root_id, parent)?;
+                if opened.format != Format::Zip {
+                    return Err(error("NOT_A_CONTAINER", "Selected path is not a container"));
+                }
+                let prefix = crate::archive::normalize_name(prefix)
+                    .ok_or_else(|| error("UNSAFE_MEMBER_NAME", "Unsafe ZIP prefix"))?;
+                if filesystem::blocked(Path::new(&prefix)) {
+                    return Err(error(
+                        "BLOCKED_PATH",
+                        "Credential or service path is blocked",
+                    ));
+                }
+                (opened, prefix)
+            }
+            Err(e) => return Err(e),
+        };
+        check_child_depth(&opened)?;
+        let depth = number(args, "depth", 1, 5)?;
+        let limit = number(args, "limit", 500, 2000)?;
+        let base = if prefix.is_empty() {
+            opened.location.display()
+        } else {
+            format!("{}::{prefix}", opened.location.display())
+        };
+        let hash = cursor::request_hash(&["list_directory", root_id, &base, &depth.to_string()]);
+        let resume = args
+            .get("cursor")
+            .map(|_| cursor::decode(string(args, "cursor", None)?, CursorKind::Walk, hash))
+            .transpose()?;
+        if resume
+            .as_ref()
+            .is_some_and(|c| c.p.first().map(String::as_str) != Some(root_id))
+        {
+            return Err(error("INVALID_CURSOR", "Invalid container position"));
+        }
+        let after = resume.as_ref().map(|c| &c.p[1..]);
+        let display = opened.location.display();
+        let mut entries = std::collections::BTreeMap::<Vec<String>, Value>::new();
+        match opened.format {
+            Format::Zip => {
+                let members = crate::archive::list_members(opened.source)?;
+                let prefix_slash = format!("{prefix}/");
+                let mut found_prefix = prefix.is_empty();
+                for member in members {
+                    if member.name == prefix {
+                        found_prefix = true;
+                        continue;
+                    }
+                    let relative = if prefix.is_empty() {
+                        member.name.as_str()
+                    } else if let Some(s) = member.name.strip_prefix(&prefix_slash) {
+                        found_prefix = true;
+                        s
+                    } else {
+                        continue;
+                    };
+                    let parts: Vec<String> = if member.reason == Some("UNSAFE_MEMBER_NAME") {
+                        vec![relative.into()]
+                    } else {
+                        relative
+                            .split('/')
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    };
+                    for n in 1..=parts.len().min(depth) {
+                        let components = parts[..n].to_vec();
+                        let path = format!(
+                            "{base}{}{}",
+                            if prefix.is_empty() { "::" } else { "/" },
+                            components.join("/")
+                        );
+                        let is_dir = n < parts.len() || member.is_dir;
+                        let entry = json!({"name":parts[n-1],"path":path,"relativePath":path.strip_prefix(&format!("{root_id}/")).unwrap_or(&path),"type":if is_dir {"directory"} else {"file"},"size":if is_dir {None} else {Some(member.size)},"compressedSize":if is_dir {None} else {Some(member.compressed_size)},"readable":if is_dir && n < parts.len() {true} else {member.readable},"reason":if is_dir && n < parts.len() {None} else {member.reason}});
+                        entries.entry(components).or_insert(entry);
+                    }
+                }
+                if !found_prefix {
+                    return Err(error("MEMBER_NOT_FOUND", "ZIP prefix not found"));
+                }
+            }
+            Format::Eml | Format::Msg => {
+                let format = opened.format;
+                let mail = if format == Format::Eml {
+                    email::parse_eml(&opened.into_bytes(email::EML_LIMIT)?)?
+                } else {
+                    msg::parse_msg(opened.source)?
+                };
+                for info in mail.attachments {
+                    let reason = check_attachment(&info).err().map(|e| e.code).or(
+                        if format == Format::Msg && info.embedded_message {
+                            Some("UNSUPPORTED_FORMAT")
+                        } else {
+                            None
+                        },
+                    );
+                    if reason == Some("BLOCKED_PATH") {
+                        continue;
+                    }
+                    let component = info.index.to_string();
+                    let path = format!("{display}::{component}");
+                    entries.insert(vec![component],json!({"name":info.name,"path":path,"relativePath":path.strip_prefix(&format!("{root_id}/")).unwrap_or(&path),"type":"file","size":info.size,"index":info.index,"mimeType":info.mime,"readable":reason.is_none(),"reason":reason}));
+                }
+            }
+            _ => return Err(error("NOT_A_CONTAINER", "Selected path is not a container")),
+        }
+        let mut output = Vec::new();
+        let mut skipped = 0;
+        let mut pending = 0;
+        let mut omitted_directory: Option<Vec<String>> = None;
+        let mut last = None;
+        let mut incomplete = false;
+        for (components, entry) in entries {
+            if omitted_directory
+                .as_ref()
+                .is_some_and(|p| components.starts_with(p))
+            {
+                continue;
+            }
+            omitted_directory = None;
+            if after.is_some_and(|p| components.as_slice() <= p) {
+                continue;
+            }
+            let (name, parent) = components.split_last().unwrap();
+            if !cursor::walk_child_fits(root_id, parent, name) {
+                pending += 1;
+                if entry["type"] == "directory" {
+                    omitted_directory = Some(components);
+                }
+                continue;
+            }
+            // Skips belong to the next yielded entry, never to the final peek.
+            if !output.is_empty() && (output.len() >= limit || Instant::now() >= deadline) {
+                incomplete = true;
+                break;
+            }
+            skipped += pending;
+            pending = 0;
+            let mut p = vec![root_id.to_owned()];
+            p.extend(components);
+            last = Some(Cursor {
+                v: 1,
+                k: CursorKind::Walk,
+                h: hash,
+                f: None,
+                p,
+                u: 0,
+                o: 0,
+            });
+            output.push(entry);
+        }
+        if !incomplete {
+            skipped += pending;
+        }
+        let mut result = json!({"root":root_id,"path":base,"entries":output,"truncated":incomplete,"skippedTooDeep":skipped});
+        if incomplete {
+            result["nextCursor"] = json!(cursor::encode(&last.unwrap()));
+        }
+        Ok(result)
     })
 }
 pub(crate) struct Unit {
@@ -367,7 +647,7 @@ pub(crate) fn open_text_document(opened: Opened, args: &Value) -> Result<Box<dyn
         _ => Err(unsupported(opened.format, &opened.name)),
     })
 }
-fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+pub(crate) fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
         .unwrap_or_else(|_| Err(error("DOCUMENT_INVALID", "Cannot parse document")))
 }
@@ -381,10 +661,12 @@ fn sequence_hash(tool: &str, location: &Location, args: &Value) -> u64 {
         .map(Value::to_string)
         .unwrap_or_default();
     let sheet = args.get("sheet").map(Value::to_string).unwrap_or_default();
+    // Preserve the released disk-only sequence hash; append members to its path.
+    let id = location.id();
     cursor::request_hash(&[
         tool,
         &location.root,
-        &filesystem::display(&location.disk),
+        id.split_once(':').unwrap().1,
         &start,
         &end,
         &sheet,
@@ -426,6 +708,9 @@ pub(crate) fn read_document(root: &RootDir, root_id: &str, args: &Value) -> Resu
     guarded(|| {
         let deadline = call_deadline();
         let opened = open(root, root_id, string(args, "path", None)?)?;
+        if opened.format == Format::Zip {
+            return inspect_document(root, root_id, args);
+        }
         let max = number(args, "maxChars", DOC_DEFAULT_CHARS, OUTPUT_LIMIT)?;
         let hash = sequence_hash("read_document", &opened.location, args);
         let resume = continuation(args, CursorKind::Doc, hash, opened.fingerprint)?;
@@ -534,7 +819,7 @@ pub(crate) fn read_document(root: &RootDir, root_id: &str, args: &Value) -> Resu
         if let Value::Object(summary) = doc.summary() {
             result.as_object_mut().unwrap().extend(summary);
         }
-        attachment_paths(&mut result, &location.display());
+        attachment_paths(&mut result, &location.display(), location.members.len());
         if u < range.end {
             result["nextCursor"] = json!(cursor::encode(&position(
                 CursorKind::Doc,
@@ -640,11 +925,26 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
     guarded(|| {
         let deadline = call_deadline();
         let opened = open(root, root_id, string(args, "path", None)?)?;
+        check_child_depth(&opened)?;
+        let member_depth = opened.location.members.len();
         let hash = sequence_hash("inspect_document", &opened.location, args);
         let resume = continuation(args, CursorKind::Inspect, hash, opened.fingerprint)?;
         let fingerprint = opened.fingerprint;
         let mut result = json!({"kind":"inspect","format":opened.format.name(),"root":root_id,"path":opened.location.display(),"id":opened.location.id()});
         let (summary, next) = match opened.format {
+            Format::Zip => {
+                if resume.is_some() {
+                    return Err(error(
+                        "INVALID_CURSOR",
+                        "ZIP inspection is complete in one call",
+                    ));
+                }
+                let members = crate::archive::list_members(opened.source)?;
+                (
+                    json!({"entries":members.len(),"files":members.iter().filter(|m| !m.is_dir).count(),"directories":members.iter().filter(|m| m.is_dir).count(),"totalUncompressed":members.iter().fold(0u64,|sum,m| sum.saturating_add(m.size)),"unreadable":members.iter().filter(|m| !m.readable).count(),"hint":"use list_directory"}),
+                    None,
+                )
+            }
             Format::Text => {
                 if resume.is_some() {
                     return Err(error(
@@ -693,7 +993,7 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
             .unwrap()
             .extend(summary.as_object().unwrap().clone());
         let display = result["path"].as_str().unwrap().to_owned();
-        attachment_paths(&mut result, &display);
+        attachment_paths(&mut result, &display, member_depth);
         if let Some(page) = next {
             result["nextCursor"] = json!(cursor::encode(&position(
                 CursorKind::Inspect,
@@ -706,7 +1006,10 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
         Ok(result)
     })
 }
-fn attachment_paths(value: &mut Value, display: &str) {
+fn attachment_paths(value: &mut Value, display: &str, member_depth: usize) {
+    if member_depth >= CONTAINER_DEPTH {
+        return;
+    }
     if let Some(attachments) = value.get_mut("attachments").and_then(Value::as_array_mut) {
         for attachment in attachments {
             attachment["path"] = json!(format!("{display}::{}", attachment["index"]));
@@ -719,7 +1022,26 @@ pub(crate) fn fetch(root: &RootDir, root_id: &str, raw_path: &str, id: &str) -> 
         root_id,
         &json!({"path":raw_path,"maxChars":DOC_DEFAULT_CHARS}),
     )?;
-    let mut metadata = json!({"root":root_id,"path":doc["path"],"mimeType":filesystem::mime(Path::new(raw_path)),"format":doc["format"],"truncated":doc["truncated"]});
+    if doc["kind"] != "document" {
+        return Err(error(
+            "UNSUPPORTED_FORMAT",
+            "ZIP container; use list_directory",
+        ));
+    }
+    let format = doc["format"].as_str().unwrap_or("other");
+    let attachment_name = format!(
+        "attachment.{}",
+        if format == "text" { "txt" } else { format }
+    );
+    let mime_name = if raw_path
+        .rsplit_once("::")
+        .is_some_and(|(_, last)| !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()))
+    {
+        &attachment_name
+    } else {
+        raw_path
+    };
+    let mut metadata = json!({"root":root_id,"path":doc["path"],"mimeType":filesystem::mime(Path::new(mime_name)),"format":doc["format"],"truncated":doc["truncated"]});
     if let Some(cursor) = doc.get("nextCursor") {
         metadata["nextCursor"] = cursor.clone();
     }
@@ -739,6 +1061,152 @@ mod tests {
             nickname: None,
         })
         .unwrap()
+    }
+    fn depth_cap_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            zip.start_file(
+                *name,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+    fn depth_cap_mail(format: Format) -> Vec<u8> {
+        use std::io::Write;
+        if format == Format::Eml {
+            return b"Subject: synthetic\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain\r\n\r\nparent body\r\n--m\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=child.txt\r\n\r\nSAFE CHILD\r\n--m--\r\n".to_vec();
+        }
+        let mut cfb = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
+        cfb.create_stream("/__substg1.0_1000001F")
+            .unwrap()
+            .write_all(
+                &"parent body"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let base = "/__attach_version1.0_#00000000";
+        cfb.create_storage(base).unwrap();
+        cfb.create_stream(format!("{base}/__substg1.0_3707001F"))
+            .unwrap()
+            .write_all(
+                &"child.txt"
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        cfb.create_stream(format!("{base}/__substg1.0_37010102"))
+            .unwrap()
+            .write_all(b"SAFE CHILD")
+            .unwrap();
+        cfb.into_inner().into_inner()
+    }
+    fn depth_cap_fixture(
+        tmp: &tempfile::TempDir,
+        format: Format,
+        depth: usize,
+        corrupt: bool,
+    ) -> String {
+        let mut bytes = if corrupt {
+            b"truncated".to_vec()
+        } else if format == Format::Zip {
+            depth_cap_zip(&[("child.txt", b"SAFE CHILD")])
+        } else {
+            depth_cap_mail(format)
+        };
+        let mut name = format!("leaf.{}", format.name());
+        let mut raw = name.clone();
+        for n in (0..depth).rev() {
+            bytes = depth_cap_zip(&[(&name, &bytes)]);
+            name = format!("depth-{depth}-{n}-{}.zip", format.name());
+            raw = format!("{name}::{raw}");
+        }
+        std::fs::write(tmp.path().join(name), bytes).unwrap();
+        raw
+    }
+    #[test]
+    fn container_depth_cap_rejects_listing_at_three_before_parsing_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = root(&tmp);
+        for format in [Format::Zip, Format::Eml, Format::Msg] {
+            for corrupt in [false, true] {
+                let raw = depth_cap_fixture(&tmp, format, 3, corrupt);
+                let failure = list_container(&root, "work", &json!({"path":raw})).unwrap_err();
+                assert_eq!(
+                    failure.code, "NESTING_TOO_DEEP",
+                    "{format:?}, corrupt={corrupt}"
+                );
+                assert_eq!(
+                    failure.message,
+                    "At most three container levels are supported"
+                );
+            }
+        }
+    }
+    #[test]
+    fn container_depth_cap_rejects_inspection_at_three_before_parsing_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = root(&tmp);
+        for format in [Format::Zip, Format::Eml, Format::Msg] {
+            for corrupt in [false, true] {
+                let raw = depth_cap_fixture(&tmp, format, 3, corrupt);
+                assert_eq!(
+                    inspect_document(&root, "work", &json!({"path":raw}))
+                        .unwrap_err()
+                        .code,
+                    "NESTING_TOO_DEEP",
+                    "{format:?}, corrupt={corrupt}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn container_depth_cap_keeps_children_readable_below_three() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = root(&tmp);
+        for format in [Format::Zip, Format::Eml, Format::Msg] {
+            for depth in 0..=2 {
+                let raw = depth_cap_fixture(&tmp, format, depth, false);
+                let args = json!({"path":raw});
+                let listed = list_container(&root, "work", &args).unwrap();
+                let entries = listed["entries"].as_array().unwrap();
+                assert_eq!(entries.len(), 1, "{format:?}, depth={depth}");
+                assert_eq!(entries[0]["readable"], true);
+                let child = entries[0]["relativePath"].as_str().unwrap();
+                assert_eq!(child.matches("::").count(), depth + 1);
+                assert!(
+                    read_document(&root, "work", &json!({"path":child})).unwrap()["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("SAFE CHILD")
+                );
+                let info = inspect_document(&root, "work", &args).unwrap();
+                if format == Format::Zip {
+                    assert_eq!(info["entries"], 1);
+                } else {
+                    assert_eq!(info["attachments"][0]["path"], entries[0]["path"]);
+                }
+            }
+        }
+    }
+    #[test]
+    fn container_depth_cap_keeps_terminal_mail_text_without_child_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = root(&tmp);
+        for format in [Format::Eml, Format::Msg] {
+            let raw = depth_cap_fixture(&tmp, format, 3, false);
+            let doc = read_document(&root, "work", &json!({"path":raw})).unwrap();
+            assert!(doc["text"].as_str().unwrap().contains("parent body"));
+            assert_eq!(doc["attachments"].as_array().unwrap().len(), 1);
+            assert!(doc["attachments"][0].get("path").is_none(), "{format:?}");
+        }
     }
     #[test]
     fn text_cursor_chains_preserve_unicode_and_lines_even_at_one_char() {

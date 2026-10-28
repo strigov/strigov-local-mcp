@@ -106,7 +106,7 @@ def main():
     exe = target / 'local-files.exe'
 
     code, out, ok, log = run('app-version', [exe, '--version'])
-    record('app-version', ok and out.strip() == 'Strigov Local MCP 2.1.2', code, [log])
+    record('app-version', ok and out.strip() == 'Strigov Local MCP 2.2.0', code, [log])
     settings = work / 'Настройки пользователя'
     config = settings / 'folders.json'
     code, _, ok, log = run('app-init', [exe, 'init', '--config', config])

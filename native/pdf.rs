@@ -3606,7 +3606,8 @@ semivoicedmarkkanahalfwidth centmonospace sterlingmonospace macronmonospace yenm
     }
     #[test]
     fn production_document_loads_use_only_the_bounded_helper() {
-        let production = include_str!("pdf.rs").split("mod tests {").next().unwrap();
+        let source = include_str!("pdf.rs").replace("\r\n", "\n");
+        let production = source.split("mod tests {").next().unwrap();
         assert!(!production.contains("load_metadata"));
         let start = production
             .find("fn load_document(")

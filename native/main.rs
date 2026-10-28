@@ -1,7 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod archive;
 mod config;
 mod connection;
 mod cursor;
+mod doc_search;
 mod documents;
 mod docx;
 mod email;

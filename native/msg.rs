@@ -95,7 +95,10 @@ fn date(value: u64) -> Option<String> {
 }
 pub(crate) fn parse_msg(source: Source) -> Result<Mail> {
     let mut cfb = cfb::CompoundFile::open(source).map_err(|_| invalid())?;
-    let props = stream(&mut cfb, "/__properties_version1.0")?.unwrap_or_default();
+    parse_compound(&mut cfb)
+}
+fn parse_compound(cfb: &mut Compound) -> Result<Mail> {
+    let props = stream(cfb, "/__properties_version1.0")?.unwrap_or_default();
     if !props.is_empty() && (props.len() < 32 || (props.len() - 32) % 16 != 0) {
         return Err(invalid());
     }
@@ -103,15 +106,15 @@ pub(crate) fn parse_msg(source: Source) -> Result<Mail> {
         .or_else(|| encoding(&props, 0x3fde0003))
         .unwrap_or(encoding_rs::WINDOWS_1251);
     let html_enc = encoding(&props, 0x3fde0003).unwrap_or(enc);
-    let body = text(&mut cfb, "", 0x1000, enc)?;
+    let body = text(cfb, "", 0x1000, enc)?;
     let (body, body_source) = if let Some(body) = body.filter(|s| !s.is_empty()) {
         (body, "text/plain")
-    } else if let Some(html) = stream(&mut cfb, &property_path("", 0x1013, 0x0102))? {
+    } else if let Some(html) = stream(cfb, &property_path("", 0x1013, 0x0102))? {
         (
             mail_parser::decoders::html::html_to_text(&html_enc.decode(&html).0),
             "text/html",
         )
-    } else if let Some(html) = text(&mut cfb, "", 0x1013, html_enc)? {
+    } else if let Some(html) = text(cfb, "", 0x1013, html_enc)? {
         (
             mail_parser::decoders::html::html_to_text(&html),
             "text/html",
@@ -121,8 +124,8 @@ pub(crate) fn parse_msg(source: Source) -> Result<Mail> {
     } else {
         (String::new(), "none")
     };
-    let sender_name = first_text(&mut cfb, "", &[0x0c1a, 0x0042], enc)?;
-    let sender_address = first_text(&mut cfb, "", &[0x5d01, 0x0c1f, 0x0065], enc)?;
+    let sender_name = first_text(cfb, "", &[0x0c1a, 0x0042], enc)?;
+    let sender_address = first_text(cfb, "", &[0x5d01, 0x0c1f, 0x0065], enc)?;
     let from = match (sender_name, sender_address) {
         (Some(n), Some(a)) => Some(format!("{n} <{a}>")),
         (n, a) => n.or(a),
@@ -143,15 +146,14 @@ pub(crate) fn parse_msg(source: Source) -> Result<Mail> {
         } else {
             0
         };
-        let props =
-            stream(&mut cfb, &format!("{base}/__properties_version1.0"))?.unwrap_or_default();
+        let props = stream(cfb, &format!("{base}/__properties_version1.0"))?.unwrap_or_default();
         let embedded = fixed(&props, 8, 0x37050003) == Some(5)
             || cfb.is_storage(property_path(base, 0x3701, 0x000d));
         attachments.push(AttachmentInfo {
             index: i + 1,
-            name: first_text(&mut cfb, base, &[0x3707, 0x3704, 0x3001], enc)?
+            name: first_text(cfb, base, &[0x3707, 0x3704, 0x3001], enc)?
                 .unwrap_or_else(|| "attachment".into()),
-            mime: text(&mut cfb, base, 0x370e, enc)?.unwrap_or_else(|| {
+            mime: text(cfb, base, 0x370e, enc)?.unwrap_or_else(|| {
                 if embedded {
                     "message/rfc822".into()
                 } else {
@@ -164,10 +166,10 @@ pub(crate) fn parse_msg(source: Source) -> Result<Mail> {
         });
     }
     Ok(Mail {
-        subject: text(&mut cfb, "", 0x0037, enc)?,
+        subject: text(cfb, "", 0x0037, enc)?,
         from,
-        to: text(&mut cfb, "", 0x0e04, enc)?.into_iter().collect(),
-        cc: text(&mut cfb, "", 0x0e03, enc)?.into_iter().collect(),
+        to: text(cfb, "", 0x0e04, enc)?.into_iter().collect(),
+        cc: text(cfb, "", 0x0e03, enc)?.into_iter().collect(),
         date: fixed(&props, 32, 0x0e060040)
             .or_else(|| fixed(&props, 32, 0x00390040))
             .and_then(date),
@@ -175,6 +177,48 @@ pub(crate) fn parse_msg(source: Source) -> Result<Mail> {
         body_source,
         attachments,
     })
+}
+
+pub(crate) fn msg_attachment(source: Source, index: usize) -> Result<(AttachmentInfo, Vec<u8>)> {
+    let mut cfb = cfb::CompoundFile::open(source).map_err(|_| invalid())?;
+    let mut paths: Vec<_> = cfb
+        .read_storage("/")
+        .map_err(|_| invalid())?
+        .filter(|e| e.is_storage() && e.name().starts_with("__attach_version1.0_#"))
+        .map(|e| e.path().to_string_lossy().replace('\\', "/"))
+        .collect();
+    paths.sort();
+    let base = index
+        .checked_sub(1)
+        .and_then(|i| paths.get(i))
+        .cloned()
+        .ok_or_else(|| error("MEMBER_NOT_FOUND", "Attachment not found"))?;
+    let mail = parse_compound(&mut cfb)?;
+    let info = mail
+        .attachments
+        .into_iter()
+        .nth(index - 1)
+        .ok_or_else(invalid)?;
+    if info.embedded_message {
+        return Err(error(
+            "UNSUPPORTED_FORMAT",
+            "Cannot read embedded Outlook message",
+        ));
+    }
+    crate::documents::check_attachment(&info)?;
+    let mut bytes = Vec::with_capacity(info.size as usize + 1);
+    cfb.open_stream(property_path(&base, 0x3701, 0x0102))
+        .map_err(|_| invalid())?
+        .take(crate::archive::MEMBER_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() as u64 > crate::archive::MEMBER_LIMIT {
+        return Err(error("FILE_TOO_LARGE", "Attachment exceeds 256 MiB"));
+    }
+    if bytes.len() as u64 != info.size {
+        return Err(invalid());
+    }
+    Ok((info, bytes))
 }
 
 #[cfg(test)]
@@ -251,6 +295,37 @@ mod tests {
             }
         }
         Source::Memory(cfb.into_inner())
+    }
+    #[test]
+    fn attachment_stream_is_bounded_and_embedded_messages_are_explicit() {
+        let (info, bytes) = msg_attachment(fixture(false, false), 1).unwrap();
+        assert_eq!(info.size, 1024 * 1024);
+        assert_eq!(bytes, vec![0; 1024 * 1024]);
+        assert_eq!(
+            msg_attachment(fixture(false, false), 2).err().unwrap().code,
+            "UNSUPPORTED_FORMAT"
+        );
+        for index in [0, 3, usize::MAX] {
+            assert_eq!(
+                msg_attachment(fixture(false, false), index)
+                    .err()
+                    .unwrap()
+                    .code,
+                "MEMBER_NOT_FOUND"
+            );
+        }
+        let mut info = parse_msg(fixture(false, false))
+            .unwrap()
+            .attachments
+            .remove(0);
+        info.size = crate::archive::MEMBER_LIMIT + 1;
+        assert_eq!(
+            crate::documents::check_attachment(&info)
+                .err()
+                .unwrap()
+                .code,
+            "FILE_TOO_LARGE"
+        );
     }
     #[test]
     fn unicode_ansi_properties_time_and_attachment_metadata() {
