@@ -59,7 +59,7 @@ pub(crate) struct PagePaint {
     pub clipped: bool,
 }
 pub(crate) struct PageImage {
-    #[allow(dead_code)] // C7 image descriptor consumed in the next phase.
+    #[cfg(test)] // Retained only to verify image descriptors against source objects.
     pub id: ObjectId,
     pub width: u32,
     pub height: u32,
@@ -1141,6 +1141,7 @@ impl PdfDocument {
                                 .unwrap_or(0)
                         };
                         images.push(PageImage {
+                            #[cfg(test)]
                             id,
                             width: dimension(b"Width"),
                             height: dimension(b"Height"),
@@ -1198,11 +1199,9 @@ impl PdfDocument {
         };
         json!({"title":field(b"Title"),"producer":field(b"Producer"),"encrypted":self.encrypted})
     }
-    #[allow(dead_code)] // C7 interface consumed by the following approved phase.
     pub(crate) fn document(&self) -> &Document {
         &self.doc
     }
-    #[allow(dead_code)]
     pub(crate) fn into_document(self) -> Document {
         self.doc
     }

@@ -786,15 +786,7 @@ impl Filesystem {
                         if let Ok(text) = std::str::from_utf8(&buffer)
                             && let Some(found) = matcher.find(text)
                         {
-                            let mut from = found.start().saturating_sub(360);
-                            while !text.is_char_boundary(from) {
-                                from += 1;
-                            }
-                            let mut to = (found.end() + 640).min(text.len());
-                            while !text.is_char_boundary(to) {
-                                to -= 1;
-                            }
-                            results.push(json!({"root":definition.id,"path":public(&definition.id,&entry.logical),"relativePath":display(&entry.logical),"uri":uri(&definition.id,&entry.logical),"line":memchr::memchr_iter(b'\n',&buffer[..found.start()]).count()+1,"snippet":text[from..to].split_whitespace().collect::<Vec<_>>().join(" ")}));
+                            results.push(json!({"root":definition.id,"path":public(&definition.id,&entry.logical),"relativePath":display(&entry.logical),"uri":uri(&definition.id,&entry.logical),"line":memchr::memchr_iter(b'\n',&buffer[..found.start()]).count()+1,"snippet":crate::doc_search::text_snippet(text, found)}));
                         }
                     }
                 } else if text_search

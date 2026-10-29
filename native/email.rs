@@ -1,5 +1,5 @@
 use crate::{
-    documents::{TextDocument, Unit},
+    documents::{Format, TextDocument, Unit},
     filesystem::{Result, error},
 };
 use mail_parser::{Address, MessageParser, MimeHeaders, PartType};
@@ -112,7 +112,7 @@ pub(crate) struct MailDocument {
     blocks: Vec<Unit>,
     summary: Value,
 }
-pub(crate) fn mail_document(mut mail: Mail) -> MailDocument {
+pub(crate) fn mail_document(mut mail: Mail, format: Format) -> MailDocument {
     if mail.body.contains("\r\n") {
         mail.body = mail.body.replace("\r\n", "\n");
     }
@@ -161,7 +161,7 @@ pub(crate) fn mail_document(mut mail: Mail) -> MailDocument {
     if !mail.attachments.is_empty() {
         blocks.push(Unit {
             locator: json!({"part":"attachments"}),
-            heading: Some("Attachments (metadata only)".into()),
+            heading: Some("Attachments (open readable items with ::N)".into()),
             text: mail
                 .attachments
                 .iter()
@@ -184,9 +184,20 @@ pub(crate) fn mail_document(mut mail: Mail) -> MailDocument {
                 .join("\n"),
         });
     }
+    let attachments: Vec<Value> = mail
+        .attachments
+        .iter()
+        .map(|info| {
+            let reason = crate::documents::attachment_reason(info, format);
+            let mut attachment = json!(info);
+            attachment["readable"] = json!(reason.is_none());
+            attachment["reason"] = json!(reason);
+            attachment
+        })
+        .collect();
     MailDocument {
         blocks,
-        summary: json!({"subject":mail.subject,"from":mail.from,"to":mail.to,"cc":mail.cc,"date":mail.date,"bodySource":mail.body_source,"attachments":mail.attachments}),
+        summary: json!({"subject":mail.subject,"from":mail.from,"to":mail.to,"cc":mail.cc,"date":mail.date,"bodySource":mail.body_source,"attachments":attachments}),
     }
 }
 impl TextDocument for MailDocument {
@@ -284,7 +295,7 @@ mod tests {
             assert_eq!(mail.attachments.len(), 1);
             assert_eq!(mail.attachments[0].name, "pixel.png");
             assert!(mail.attachments[0].inline);
-            let mut doc = mail_document(mail);
+            let mut doc = mail_document(mail, Format::Eml);
             assert_eq!(doc.unit(1).unwrap().text.trim(), "first text");
             assert_eq!(doc.unit(2).unwrap().text.trim(), "second text");
             assert_eq!(doc.unit(2).unwrap().locator["paragraph"], 2);
@@ -297,7 +308,7 @@ mod tests {
         assert_eq!(mail.body.matches("same content").count(), 1);
         assert_eq!(mail.body_source, "text/plain");
         assert!(mail.attachments.is_empty());
-        let mut doc = mail_document(mail);
+        let mut doc = mail_document(mail, Format::Eml);
         assert_eq!(doc.unit_count(), 2);
         assert_eq!(doc.unit(1).unwrap().text.trim(), "same content");
     }
@@ -312,7 +323,7 @@ mod tests {
         assert_eq!(mail.attachments[0].size, 3);
         assert_eq!(mail.attachments[1].name, "test.pdf");
         assert_eq!(mail.attachments[1].size, 4);
-        let mut doc = mail_document(mail);
+        let mut doc = mail_document(mail, Format::Eml);
         assert_eq!(doc.unit(0).unwrap().locator, json!({"part":"headers"}));
         assert!(
             doc.unit(doc.unit_count() - 1)

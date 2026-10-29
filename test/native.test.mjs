@@ -536,7 +536,7 @@ test('EML multipart selections survive complete cursor chains without alternativ
     const args={root:'work',path:name};await writeFile(path.join(f.work,name),raw);
     const full=(await f.call('read_document',args)).structuredContent;
     assert.deepEqual(full.units.filter(u=>u.part==='body').map(u=>u.paragraph),expected.map((_,i)=>i+1));
-    const recovered=expected.map(()=>''),headings={headers:'Mail headers\n',body:'Mail body · text/plain\n',attachments:'Attachments (metadata only)\n'};
+    const recovered=expected.map(()=>''),headings={headers:'Mail headers\n',body:'Mail body · text/plain\n',attachments:'Attachments (open readable items with ::N)\n'};
     let cursor,calls=0;
     do {
       const r=await f.call('read_document',{...args,maxChars:80,...(cursor?{cursor}:{})});assert.equal(r.isError,undefined);

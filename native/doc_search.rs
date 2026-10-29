@@ -14,7 +14,7 @@ pub(crate) struct DocHit {
     pub locator: Value,
     pub snippet: String,
 }
-fn snippet(text: &str, found: regex::Match<'_>, locator: &Value) -> String {
+pub(crate) fn text_snippet(text: &str, found: regex::Match<'_>) -> String {
     let mut from = found.start().saturating_sub(360);
     while !text.is_char_boundary(from) {
         from += 1;
@@ -23,6 +23,12 @@ fn snippet(text: &str, found: regex::Match<'_>, locator: &Value) -> String {
     while !text.is_char_boundary(to) {
         to -= 1;
     }
+    text[from..to]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+fn snippet(text: &str, found: regex::Match<'_>, locator: &Value) -> String {
     let prefix = if let Some(page) = locator.get("page") {
         format!("[p. {page}] ")
     } else if let (Some(sheet), Some(row)) = (locator["sheet"].as_str(), locator.get("row")) {
@@ -43,13 +49,7 @@ fn snippet(text: &str, found: regex::Match<'_>, locator: &Value) -> String {
     } else {
         String::new()
     };
-    format!(
-        "{prefix}{}",
-        text[from..to]
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    )
+    format!("{prefix}{}", text_snippet(text, found))
 }
 type FindResult = (Vec<DocHit>, Option<(usize, usize)>);
 
@@ -122,6 +122,52 @@ mod tests {
         time::Duration,
     };
 
+    #[test]
+    fn plain_and_document_snippets_share_unicode_windows_and_whitespace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = Filesystem::new(Config {
+            version: 1,
+            roots: vec![Root {
+                id: "work".into(),
+                path: tmp.path().into(),
+                nickname: None,
+            }],
+            next_root_id: 1,
+        });
+        let left = "a".repeat(359);
+        let right = "b".repeat(639);
+        for (text, expected) in [
+            (
+                format!("excluded😀{left}needle{right}😀excluded"),
+                format!("{left}needle{right}"),
+            ),
+            (
+                "Начало\t\nneedle\u{2003} конец".into(),
+                "Начало needle конец".into(),
+            ),
+            ("needle".into(), "needle".into()),
+        ] {
+            std::fs::write(tmp.path().join("a.txt"), &text).unwrap();
+            std::fs::write(
+                tmp.path().join("b.eml"),
+                format!(
+                    "Subject: synthetic\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{text}"
+                ),
+            )
+            .unwrap();
+            let result = fs
+                .call("search_text", &json!({"root":"work","query":"needle"}))
+                .unwrap();
+            let hits = result["results"].as_array().unwrap();
+            assert_eq!(hits.len(), 2);
+            let plain = hits.iter().find(|h| h["relativePath"] == "a.txt").unwrap();
+            let document = hits.iter().find(|h| h["relativePath"] == "b.eml").unwrap();
+            assert_eq!(plain["line"], if text.contains('\n') { 2 } else { 1 });
+            assert_eq!(plain["snippet"], expected);
+            assert_eq!(document["snippet"], format!("[mail] {expected}"));
+            assert_eq!(document["locator"]["paragraph"], 1);
+        }
+    }
     fn zip(parts: &[(&str, &str)]) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for (name, text) in parts {
