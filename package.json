@@ -2,17 +2,17 @@
   "name": "strigov-local-files-mcp",
   "version": "1.0.0",
   "private": true,
-  "description": "Read-only MCP server for two explicitly allowed local document roots.",
+  "description": "Integration test client for the native Strigov Local MCP server.",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "start": "node src/server.js",
-    "test": "node --test",
-    "check": "node --check src/filesystem.js && node --check src/server.js && node --test"
+    "test": "node --test test/native.test.mjs",
+    "check": "node --check test/native.test.mjs && npm test"
   },
-  "dependencies": {
+  "devDependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "zod": "3.25.76"
   }

@@ -72,8 +72,6 @@ python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.2.0-wi
 
 Результаты нативной проверки 13 октября 2026, ручного CI и установщика —
 в [windows-verification-2026-10-13.md](windows-verification-2026-10-13.md).
-Исторический `scripts/install-native-windows.ps1` рассчитан на версию 2.0.0
-и не подходит для текущего приложения.
 
 Остаётся проверить вручную в интерактивной сессии:
 
@@ -82,4 +80,4 @@ python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.2.0-wi
 3. Остановку, повторный запуск, восстановление после потери сети и входа в Windows.
 4. Обновление с сохранением папок, прозвищ, ключа и туннеля на реальной установке.
 
-Windows-установщик не подписан и не опубликован.
+Windows-установщик опубликован в [релизе 2.2.0](https://github.com/strigov/GPT-MCP-filesystem/releases/tag/v2.2.0); подпись издателя отсутствует.

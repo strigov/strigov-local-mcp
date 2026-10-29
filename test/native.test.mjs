@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const binary=path.resolve(process.env.NATIVE_BINARY || 'target/release/local-files');
+const binary=path.resolve(process.env.NATIVE_BINARY || (process.platform==='win32'?'target/release/local-files.exe':'target/release/local-files'));
 async function fixture(t) {
   const base=await mkdtemp(path.join(os.tmpdir(),'local-files-rust-'));
   const work=path.join(base,'work'),cowork=path.join(base,'cowork');
