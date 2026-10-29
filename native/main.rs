@@ -1,12 +1,24 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+mod archive;
 mod config;
 mod connection;
+mod cursor;
+mod doc_search;
+mod documents;
+mod docx;
+mod email;
 mod filesystem;
+mod imaging;
 mod mcp;
+mod msg;
+mod pdf;
+mod pdf_page;
 mod service;
+mod sheets;
 #[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "windows")))]
 mod tray;
 mod vault;
+mod walk;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();

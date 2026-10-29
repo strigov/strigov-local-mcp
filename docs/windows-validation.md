@@ -14,7 +14,7 @@ Windows-проверка остановилась на `cargo clippy --locked --
   Windows получает обычный неизменяемый объект.
 - `native/nickname_dialog.rs`: упаковка Win32-шаблона использует `as_chunks::<2>()`
   вместо `chunks_exact(2)`. Порядок слов и выравнивание сохранены; API доступен
-  с Rust 1.88, указанного в `Cargo.toml`.
+  с Rust 1.88; минимальная версия в `Cargo.toml` теперь 1.92.
 
 Предупреждения не подавляются, строгость Clippy не снижена.
 
@@ -67,7 +67,7 @@ Windows-ветка `native/installer.rs` (`native/installer_windows.rs`) и сб
 ```powershell
 pwsh -NoProfile -File scripts/build-installer-windows.ps1
 python -B -m unittest discover -s test -p test_windows_packaging.py
-python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.1.2-windows-x64.zip --output-root artifacts/windows-checks
+python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.2.0-windows-x64.zip --output-root artifacts/windows-checks
 ```
 
 Результаты нативной проверки 13 октября 2026, ручного CI и установщика —

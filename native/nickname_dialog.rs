@@ -203,7 +203,7 @@ mod windows {
             0,
         ];
         words.extend(wide(title));
-        if words.len() % 2 != 0 {
+        if !words.len().is_multiple_of(2) {
             words.push(0);
         }
         let aligned: Vec<u32> = words
