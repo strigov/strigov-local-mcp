@@ -242,6 +242,15 @@ pub(crate) fn check_attachment(info: &email::AttachmentInfo) -> Result<()> {
     }
     Ok(())
 }
+pub(crate) fn attachment_reason(
+    info: &email::AttachmentInfo,
+    format: Format,
+) -> Option<&'static str> {
+    check_attachment(info)
+        .err()
+        .map(|e| e.code)
+        .or((format == Format::Msg && info.embedded_message).then_some("UNSUPPORTED_FORMAT"))
+}
 pub(crate) fn open(root: &RootDir, root_id: &str, raw: &str) -> Result<Opened> {
     guarded(|| {
         let parts: Vec<_> = raw.split("::").collect();
@@ -437,13 +446,7 @@ pub(crate) fn list_container(root: &RootDir, root_id: &str, args: &Value) -> Res
                     msg::parse_msg(opened.source)?
                 };
                 for info in mail.attachments {
-                    let reason = check_attachment(&info).err().map(|e| e.code).or(
-                        if format == Format::Msg && info.embedded_message {
-                            Some("UNSUPPORTED_FORMAT")
-                        } else {
-                            None
-                        },
-                    );
+                    let reason = attachment_reason(&info, format);
                     if reason == Some("BLOCKED_PATH") {
                         continue;
                     }
@@ -633,16 +636,16 @@ pub(crate) fn open_text_document(opened: Opened, args: &Value) -> Result<Box<dyn
             let bytes = opened.into_bytes(email::EML_LIMIT)?;
             let mail = email::parse_eml(&bytes)?;
             drop(bytes);
-            Ok(Box::new(email::mail_document(mail)) as Box<dyn TextDocument>)
+            Ok(Box::new(email::mail_document(mail, Format::Eml)) as Box<dyn TextDocument>)
         }
         Format::Msg => {
             if opened.size > msg::MSG_LIMIT {
                 return Err(error("FILE_TOO_LARGE", "MSG exceeds 256 MiB"));
             }
-            Ok(
-                Box::new(email::mail_document(msg::parse_msg(opened.source)?))
-                    as Box<dyn TextDocument>,
-            )
+            Ok(Box::new(email::mail_document(
+                msg::parse_msg(opened.source)?,
+                Format::Msg,
+            )) as Box<dyn TextDocument>)
         }
         _ => Err(unsupported(opened.format, &opened.name)),
     })
@@ -1007,12 +1010,14 @@ pub(crate) fn inspect_document(root: &RootDir, root_id: &str, args: &Value) -> R
     })
 }
 fn attachment_paths(value: &mut Value, display: &str, member_depth: usize) {
-    if member_depth >= CONTAINER_DEPTH {
-        return;
-    }
     if let Some(attachments) = value.get_mut("attachments").and_then(Value::as_array_mut) {
         for attachment in attachments {
-            attachment["path"] = json!(format!("{display}::{}", attachment["index"]));
+            if member_depth >= CONTAINER_DEPTH {
+                attachment["readable"] = json!(false);
+                attachment["reason"] = json!("NESTING_TOO_DEEP");
+            } else if attachment["readable"] == true {
+                attachment["path"] = json!(format!("{display}::{}", attachment["index"]));
+            }
         }
     }
 }
@@ -1132,6 +1137,109 @@ mod tests {
         raw
     }
     #[test]
+    fn attachment_metadata_matches_readability_without_renumbering() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = root(&tmp);
+        let cases = [
+            (".env", Some("BLOCKED_PATH")),
+            ("key.pem", Some("BLOCKED_PATH")),
+            ("../escape.txt", Some("UNSAFE_MEMBER_NAME")),
+            ("safe.txt", None),
+            ("nested.eml", None),
+        ];
+        for format in [Format::Eml, Format::Msg] {
+            let bytes = if format == Format::Eml {
+                let mut mail = "Subject: synthetic\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: text/plain\r\n\r\nparent body\r\n".to_owned();
+                for (i, (name, _)) in cases.iter().enumerate() {
+                    let mime = if i == 4 {
+                        "message/rfc822"
+                    } else {
+                        "text/plain"
+                    };
+                    mail.push_str(&format!("--m\r\nContent-Type: {mime}\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n\r\nSubject: child\r\n\r\nSAFE CHILD\r\n"));
+                }
+                mail.push_str("--m--\r\n");
+                mail.into_bytes()
+            } else {
+                let mut cfb = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
+                for (i, (name, _)) in cases.iter().enumerate() {
+                    let base = format!("/__attach_version1.0_#{i:08X}");
+                    cfb.create_storage(&base).unwrap();
+                    cfb.create_stream(format!("{base}/__substg1.0_3707001F"))
+                        .unwrap()
+                        .write_all(
+                            &name
+                                .encode_utf16()
+                                .flat_map(u16::to_le_bytes)
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap();
+                    if i == 4 {
+                        cfb.create_storage(format!("{base}/__substg1.0_3701000D"))
+                            .unwrap();
+                    } else {
+                        cfb.create_stream(format!("{base}/__substg1.0_37010102"))
+                            .unwrap()
+                            .write_all(b"SAFE CHILD")
+                            .unwrap();
+                    }
+                }
+                cfb.into_inner().into_inner()
+            };
+            let name = format!("mail.{}", format.name());
+            std::fs::write(tmp.path().join(&name), bytes).unwrap();
+            let args = json!({"path":name});
+            let listing = list_container(&root, "work", &args).unwrap();
+            for metadata in [
+                inspect_document(&root, "work", &args).unwrap(),
+                read_document(&root, "work", &args).unwrap(),
+            ] {
+                let attachments = metadata["attachments"].as_array().unwrap();
+                assert_eq!(attachments.len(), cases.len());
+                for (i, (_, expected)) in cases.iter().enumerate() {
+                    let expected = if format == Format::Msg && i == 4 {
+                        Some("UNSUPPORTED_FORMAT")
+                    } else {
+                        *expected
+                    };
+                    let attachment = &attachments[i];
+                    assert_eq!(attachment["index"], i + 1);
+                    let path = format!("{name}::{}", i + 1);
+                    let child = read_document(&root, "work", &json!({"path":path}));
+                    let entry = listing["entries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|e| e["index"] == i + 1);
+                    if let Some(reason) = expected {
+                        assert_eq!(child.unwrap_err().code, reason);
+                        assert!(attachment.get("path").is_none(), "{format:?}: {attachment}");
+                        assert_eq!(attachment["readable"], false);
+                        assert_eq!(attachment["reason"], reason);
+                        if reason == "BLOCKED_PATH" {
+                            assert!(entry.is_none());
+                        } else {
+                            assert_eq!(entry.unwrap()["reason"], reason);
+                            assert_eq!(entry.unwrap()["readable"], false);
+                        }
+                    } else {
+                        assert!(
+                            child.unwrap()["text"]
+                                .as_str()
+                                .unwrap()
+                                .contains("SAFE CHILD")
+                        );
+                        assert_eq!(attachment["path"], format!("work/{path}"));
+                        assert_eq!(attachment["readable"], true);
+                        assert!(attachment["reason"].is_null());
+                        assert_eq!(attachment["path"], entry.unwrap()["path"]);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn container_depth_cap_rejects_listing_at_three_before_parsing_children() {
         let tmp = tempfile::tempdir().unwrap();
         let root = root(&tmp);
@@ -1206,6 +1314,8 @@ mod tests {
             assert!(doc["text"].as_str().unwrap().contains("parent body"));
             assert_eq!(doc["attachments"].as_array().unwrap().len(), 1);
             assert!(doc["attachments"][0].get("path").is_none(), "{format:?}");
+            assert_eq!(doc["attachments"][0]["readable"], false);
+            assert_eq!(doc["attachments"][0]["reason"], "NESTING_TOO_DEEP");
         }
     }
     #[test]
