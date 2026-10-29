@@ -9,7 +9,7 @@ Visual Studio 2022 MSVC, Node.js 22.22.3, Python 3.11.8, PowerShell 7.6.
 Workflow `.github/workflows/native.yml` (только `workflow_dispatch`) был выключен
 на GitHub. Его включили и запустили вручную один раз на ветке `codex/release-2.1.1`:
 
-- run: https://github.com/strigov/GPT-MCP-filesystem/actions/runs/38367875880
+- run: https://github.com/strigov/strigov-local-mcp/actions/runs/38367875880
 - event `workflow_dispatch`, headSha `cd27662ce918c24e91d03460533dff8851c6633b`
 - `test (windows-latest)` — success, `test (macos-latest)` — success
 

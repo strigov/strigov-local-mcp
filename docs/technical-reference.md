@@ -108,7 +108,7 @@ flowchart LR
 
 ## Статус проверок
 
-Опубликованные сборки 2.2.0: macOS arm64 и Windows x64. Результаты проверок установщиков и перечень непроверенных сценариев приведены в [релизе 2.2.0](https://github.com/strigov/GPT-MCP-filesystem/releases/tag/v2.2.0). Минимальная версия macOS, заданная сборкой, — 13; отдельная машина с macOS 13 не тестировалась. Intel macOS и Windows ARM64 не входят в опубликованные сборки.
+Опубликованные сборки 2.2.0: macOS arm64 и Windows x64. Результаты проверок установщиков и перечень непроверенных сценариев приведены в [релизе 2.2.0](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0). Минимальная версия macOS, заданная сборкой, — 13; отдельная машина с macOS 13 не тестировалась. Intel macOS и Windows ARM64 не входят в опубликованные сборки.
 
 ## Сборка из исходников
 
@@ -171,4 +171,4 @@ npm run check
 - [Значок и прозвища](tray-nicknames-verification-2026-10-12.md).
 - [Дистрибутив macOS](distribution-verification-2026-10-12.md).
 - [Windows и установщик](windows-verification-2026-10-13.md).
-- Актуальные результаты сборки 2.2.0 приложены к [релизу](https://github.com/strigov/GPT-MCP-filesystem/releases/tag/v2.2.0).
+- Актуальные результаты сборки 2.2.0 приложены к [релизу](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0).

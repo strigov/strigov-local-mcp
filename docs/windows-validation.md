@@ -80,4 +80,4 @@ python -B scripts/verify-windows-distribution.py dist/Strigov-Local-MCP-2.2.0-wi
 3. Остановку, повторный запуск, восстановление после потери сети и входа в Windows.
 4. Обновление с сохранением папок, прозвищ, ключа и туннеля на реальной установке.
 
-Windows-установщик опубликован в [релизе 2.2.0](https://github.com/strigov/GPT-MCP-filesystem/releases/tag/v2.2.0); подпись издателя отсутствует.
+Windows-установщик опубликован в [релизе 2.2.0](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0); подпись издателя отсутствует.
