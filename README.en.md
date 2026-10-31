@@ -11,7 +11,7 @@ You choose the folders. The app provides read-only access.
 
 <img src="docs/assets/readme-cover.png" alt="Selected folders on a laptop connect to a conversation: a question becomes an answer with document sources" width="100%">
 
-**[Download for macOS](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-macos-arm64.dmg)** · **[Download for Windows](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-windows-x64.zip)**
+**[Download for macOS](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-macos-arm64.dmg)** · **[Download for Windows](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-windows-x64.zip)**
 
 macOS Apple Silicon · Windows x64 · [MIT](LICENSE)
 
@@ -38,7 +38,7 @@ A conversation in Chat follows the selected chat model's limits. Work and Codex 
 | 📦 **Look inside archives** | Browse ZIP files and read their contents without unpacking them manually. |
 | 👁️ **Keep originals intact** | The app can read and search; it cannot change or delete your files. |
 
-All these features are included in [version 2.2.0](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0), the current pre-release published on October 29, 2026.
+All these features are included in [version 2.2.1](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.1), the current pre-release.
 
 ### Supported files
 
@@ -50,7 +50,7 @@ All these features are included in [version 2.2.0](https://github.com/strigov/st
 | **Email: EML, MSG** | Sender, subject, message text, and accessible attachments. |
 | **ZIP** | File listings and supported documents inside, including nested archives. |
 | **PNG, JPEG, GIF, WebP, TIFF, BMP** | An image or a selected region; TIFF supports page selection. |
-| **Text, Markdown, CSV, source code** | UTF-8 text. |
+| **Text, Markdown, CSV, source code** | UTF-8 or Windows-1251 text. |
 
 Content search works with document text. There is no built-in optical character recognition (OCR): you can show a scanned page to ChatGPT, but folder searches cannot find words in an image without a text layer. Search inside ZIP files and email attachments separately by specifying the file inside.
 
@@ -80,7 +80,7 @@ You do not need to install developer tools or other supporting software. **The a
 ### macOS
 
 1. Open ** → About This Mac**. The “Chip” field should say Apple M1, M2, or a newer Apple chip.
-2. [Download the Mac installer](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-macos-arm64.dmg). It is named `Strigov-Local-MCP-2.2.0-macos-arm64.dmg` and usually appears in Downloads.
+2. [Download the Mac installer](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-macos-arm64.dmg). It is named `Strigov-Local-MCP-2.2.1-macos-arm64.dmg` and usually appears in Downloads.
 3. Double-click the downloaded file. In the window that opens, launch **Install Strigov Local MCP.app**.
 4. Click **«Установить» (Install)**. The app is installed in the `Applications` folder inside your home folder and starts automatically.
 5. Look for the **server rack icon in the menu bar at the top of the screen**. The app does not open a large main window. Continue to [Connect to ChatGPT](#connect-to-chatgpt).
@@ -108,7 +108,7 @@ This command expects that exact filename in Downloads. Use it only for the insta
 
 ### Windows
 
-1. [Download the Windows archive](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-windows-x64.zip). It is named `Strigov-Local-MCP-2.2.0-windows-x64.zip`.
+1. [Download the Windows archive](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-windows-x64.zip). It is named `Strigov-Local-MCP-2.2.1-windows-x64.zip`.
 2. Open Downloads, right-click the ZIP file, and choose **Extract All… → Extract**.
 3. Open the extracted folder and run **`local-files-installer.exe`**. Keep the `payload` folder beside it: do not move the installer on its own or run it directly from the ZIP.
 4. Click **«Установить» (Install)**. Administrator rights are not required.
@@ -237,7 +237,7 @@ Yes. Install the app on the other computer and create a separate tunnel and Chat
 
 ## For developers
 
-The [technical reference](docs/technical-reference.md) (in Russian) covers MCP tools, format limitations, security implementation, and build commands. Installer verification reports are attached to [release 2.2.0](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0).
+The [technical reference](docs/technical-reference.md) (in Russian) covers MCP tools, format limitations, security implementation, and build commands. Installer verification reports are attached to [release 2.2.1](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.1).
 
 ## License
 

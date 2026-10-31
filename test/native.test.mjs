@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, symlink, rm, rename, open } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -399,7 +400,7 @@ test('document continuation progresses at maxChars=1 and rejects stale files',as
   assert.equal(recovered,text);
   await writeFile(path.join(f.work,'cursor.txt'),'changed');
   assert.equal((await f.call('read_document',{root:'work',path:'cursor.txt',cursor:first})).structuredContent.error.code,'STALE_CURSOR');
-  await writeFile(path.join(f.work,'invalid-utf8.txt'),Buffer.from([65,10,0xff]));
+  await writeFile(path.join(f.work,'invalid-utf8.txt'),Buffer.from([65,10,0xff,0x00]));
   for(const tool of ['read_document','read_text_file']) {
     assert.equal((await f.call(tool,{root:'work',path:'invalid-utf8.txt',maxChars:1})).structuredContent.error.code,'NOT_TEXT');
   }
@@ -694,4 +695,765 @@ test('Ф5-F1-B1 container depth cap on ZIP and EML listings and inspection',asyn
     const info=await f.call('inspect_document',{root:'work',path:raw});assert.equal(info.isError,undefined);
     const read=await f.call('read_document',{root:'work',path:`${raw}::${child}`});assert.equal(read.isError,undefined);assert.match(read.structuredContent.text,/SAFE CHILD/);
   }
+});
+
+const cp1251Decoder = new TextDecoder('windows-1251');
+const cp1251Map = new Map();
+for (let b = 0; b < 256; b++) {
+  cp1251Map.set(cp1251Decoder.decode(Buffer.from([b])), b);
+}
+function encodeCp1251(str) {
+  const buf = Buffer.alloc(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    const b = cp1251Map.get(ch);
+    if (b === undefined) throw new Error(`Cannot encode character: ${ch}`);
+    buf[i] = b;
+  }
+  return buf;
+}
+
+const CP1251_TEXT = 'Постановление Верховного Суда РФ\r\nЗамещающие сделки: взыскание убытков.\r\nОпределение от 03.03.2023 N 305-ЭС22-2377\r\n';
+const CP1251_TYPO = '«Определение Судебной коллегии» — дело № 305-ЭС22-2377…\r\nУчёт: ЁМКОСТЬ, ёмкость; „цитата“ – § 3,\u00a0стр. 2\r\nЁлкин А.Ё. и ёлкин а.ё.\r\n';
+
+async function setupCp1251Fixtures(f) {
+  const cp1251Dir = path.join(f.work, 'cp1251');
+  const controlsDir = path.join(f.work, 'cp1251-controls');
+  const ambiguousDir = path.join(f.work, 'cp1251-ambiguous');
+  const largeDir = path.join(f.work, 'cp1251-large');
+  const hugeDir = path.join(f.work, 'cp1251-huge');
+  const accessDir = path.join(f.work, 'cp1251-access');
+
+  await mkdir(cp1251Dir);
+  await mkdir(controlsDir);
+  await mkdir(ambiguousDir);
+  await mkdir(largeDir);
+  await mkdir(hugeDir);
+  await mkdir(accessDir);
+
+  const cp1251Bytes = encodeCp1251(CP1251_TEXT);
+  assert.equal(cp1251Bytes.length, 116);
+  assert.equal(
+    crypto.createHash('sha256').update(cp1251Bytes).digest('hex'),
+    '5710bb7d8ddf71cb9922ebd3e8c81eec088beda0d790757ac00c7f03f16a1fca'
+  );
+  await writeFile(path.join(cp1251Dir, 'cp1251.txt'), cp1251Bytes);
+
+  const utf8Bytes = Buffer.from(CP1251_TEXT, 'utf8');
+  assert.equal(utf8Bytes.length, 192);
+  assert.equal(
+    crypto.createHash('sha256').update(utf8Bytes).digest('hex'),
+    '5ce4f1bfca847b42c45f016a07fbce1561fece92c3bc747f4977bd74a2efd0fd'
+  );
+  await writeFile(path.join(cp1251Dir, 'utf8.txt'), utf8Bytes);
+
+  const utf8BomBytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), utf8Bytes]);
+  assert.equal(utf8BomBytes.length, 195);
+  assert.equal(
+    crypto.createHash('sha256').update(utf8BomBytes).digest('hex'),
+    '6855f9ef7500598d5c75c6de761ff35719c56c2e2cab21329609c1d1af269a97'
+  );
+  await writeFile(path.join(cp1251Dir, 'utf8-bom.txt'), utf8BomBytes);
+
+  const typoBytes = encodeCp1251(CP1251_TYPO);
+  await writeFile(path.join(cp1251Dir, 'cp1251-typography.txt'), typoBytes);
+
+  await writeFile(path.join(cp1251Dir, 'utf8-also-cp1251.txt'), Buffer.from([0xc2, 0xbb]));
+
+  await writeFile(
+    path.join(cp1251Dir, 'bom-cp1251.txt'),
+    Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), cp1251Bytes])
+  );
+
+  const crlfIdx = utf8Bytes.indexOf(Buffer.from('\r\n')) + 2;
+  const damagedUtf8Bytes = Buffer.concat([
+    utf8Bytes.subarray(0, crlfIdx),
+    Buffer.from([0xff]),
+    utf8Bytes.subarray(crlfIdx),
+  ]);
+  assert.equal(damagedUtf8Bytes.length, 193);
+  await writeFile(path.join(cp1251Dir, 'damaged-utf8.txt'), damagedUtf8Bytes);
+
+  const nbspBytes = Buffer.from([
+    0xC2, 0xA0, 0x32, 0x30, 0x32, 0x34, 0x2C, 0x20, 0xC2, 0xA0, 0x32, 0x30, 0x32, 0x35,
+    0x20, 0x97, 0x20, 0x31, 0x30, 0x30,
+  ]);
+  assert.equal(nbspBytes.length, 20);
+  await writeFile(path.join(cp1251Dir, 'cp1251-nbsp.txt'), nbspBytes);
+
+  const binaryBytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+  await writeFile(path.join(cp1251Dir, 'binary.txt'), binaryBytes);
+  await writeFile(path.join(cp1251Dir, 'binary.bin'), binaryBytes);
+
+  await writeFile(path.join(cp1251Dir, 'cp1251.dat'), cp1251Bytes);
+
+  // Controls
+  const nulBytes = Buffer.concat([cp1251Bytes.subarray(0, 10), Buffer.from([0x00]), cp1251Bytes.subarray(10)]);
+  await writeFile(path.join(controlsDir, 'nul-control.txt'), nulBytes);
+
+  const x98Bytes = Buffer.concat([cp1251Bytes.subarray(0, 10), Buffer.from([0x98]), cp1251Bytes.subarray(10)]);
+  await writeFile(path.join(controlsDir, 'x98.txt'), x98Bytes);
+
+  const subBytes = Buffer.concat([cp1251Bytes, Buffer.from([0x1a])]);
+  await writeFile(path.join(controlsDir, 'sub.txt'), subBytes);
+
+  const utf16Bytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(CP1251_TEXT, 'utf16le')]);
+  await writeFile(path.join(controlsDir, 'utf16.txt'), utf16Bytes);
+
+  // Ambiguous
+  await writeFile(path.join(ambiguousDir, 'truncated-utf8.txt'), Buffer.from([0x74, 0x65, 0x78, 0x74, 0x3a, 0x20, 0xd1]));
+  await writeFile(path.join(ambiguousDir, 'ambiguous-bytes.txt'), Buffer.from([0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3]));
+  await writeFile(path.join(ambiguousDir, 'utf16-no-ascii.txt'), Buffer.from([0xff, 0xfe, 0xac, 0x20]));
+  await writeFile(path.join(ambiguousDir, 'utf8-nul.txt'), Buffer.from([0x41, 0x00, 0x42]));
+
+  // Large
+  const largeChunk = encodeCp1251('Большой документ ОГРОМНЫЙ\r\n');
+  const targetLargeLen = 5242881;
+  const largeBytes = Buffer.alloc(targetLargeLen);
+  let pos = 0;
+  while (pos < targetLargeLen) {
+    const copyLen = Math.min(largeChunk.length, targetLargeLen - pos);
+    largeChunk.copy(largeBytes, pos, 0, copyLen);
+    pos += copyLen;
+  }
+  await writeFile(path.join(largeDir, 'large-cp1251.txt'), largeBytes);
+
+  // Huge
+  const hugeHandle = await open(path.join(hugeDir, 'huge.txt'), 'w');
+  await hugeHandle.truncate(67108865);
+  await hugeHandle.close();
+
+  // Access
+  const secretBytes = encodeCp1251('SECRET=СЕКРЕТ_1251\r\n');
+  await writeFile(path.join(accessDir, '.env'), secretBytes);
+  await writeFile(path.join(f.cowork, 'target-cp1251.txt'), secretBytes);
+  await symlink(path.join(f.cowork, 'target-cp1251.txt'), path.join(accessDir, 'escape-cp1251.txt'));
+  await symlink('../../cowork/target-cp1251.txt', path.join(accessDir, 'rel-escape-cp1251.txt'));
+
+  return { cp1251Dir, controlsDir, ambiguousDir, largeDir, hugeDir, accessDir, cp1251Bytes, utf8Bytes, damagedUtf8Bytes, binaryBytes };
+}
+
+test('cp1251: Windows-1251 text is read and searched by every tool', async t => {
+  const f = await fixture(t);
+  const { cp1251Dir, damagedUtf8Bytes } = await setupCp1251Fixtures(f);
+  const expectedText = CP1251_TEXT.replace(/\r\n/g, '\n');
+
+  // AC2: read_text_file
+  const r1 = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251.txt' });
+  assert.equal(r1.isError, undefined);
+  assert.equal(r1.structuredContent.text, expectedText);
+  assert.equal(r1.structuredContent.totalLines, 4);
+  assert.equal(r1.structuredContent.endLine, 4);
+  assert.equal(r1.structuredContent.encoding, 'windows-1251');
+
+  const r2 = await f.call('read_text_file', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(r2.structuredContent.encoding, 'utf-8');
+  assert.equal(r2.structuredContent.text, expectedText);
+  assert.equal(r2.structuredContent.totalLines, 4);
+  assert.equal(r2.structuredContent.endLine, 4);
+
+  // AC3: range, maxChars, invalid range
+  const range = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251.txt', startLine: 2, endLine: 2 });
+  assert.equal(range.structuredContent.text, 'Замещающие сделки: взыскание убытков.');
+  assert.equal(range.structuredContent.startLine, 2);
+  assert.equal(range.structuredContent.endLine, 2);
+
+  const mc = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251.txt', maxChars: 5 });
+  assert.equal(mc.structuredContent.text, 'Поста');
+  assert.equal(mc.structuredContent.truncated, true);
+
+  const inv = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251.txt', startLine: 3, endLine: 2 });
+  assert.equal(inv.structuredContent.error.code, 'INVALID_RANGE');
+
+  // AC4: read_file
+  const rf = await f.call('read_file', { root: 'work', path: 'cp1251/cp1251.txt' });
+  assert.equal(rf.structuredContent.kind, 'text');
+  assert.equal(rf.structuredContent.mimeType, 'text/plain');
+  assert.equal(rf.structuredContent.encoding, 'windows-1251');
+  assert.equal(rf.structuredContent.text, expectedText);
+  assert.ok(!rf.content.some(c => c.type === 'resource'));
+
+  const rfUtf8 = await f.call('read_file', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(rfUtf8.structuredContent.encoding, 'utf-8');
+
+  // AC5: read_document
+  const doc = await f.call('read_document', { root: 'work', path: 'cp1251/cp1251.txt' });
+  assert.equal(doc.structuredContent.format, 'text');
+  assert.equal(doc.structuredContent.encoding, 'windows-1251');
+  assert.equal(doc.structuredContent.size, 116);
+  assert.equal(doc.structuredContent.lines, 4);
+  assert.equal(doc.structuredContent.totalUnits, 4);
+  const docBody = doc.structuredContent.text.slice(doc.structuredContent.text.indexOf('\n') + 1);
+  const utf8Doc = await f.call('read_document', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(utf8Doc.structuredContent.encoding, 'utf-8');
+  const utf8DocBody = utf8Doc.structuredContent.text.slice(utf8Doc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(docBody, utf8DocBody);
+  assert.equal(docBody, expectedText);
+
+  // AC5: cursor chain at maxChars=1
+  let cArgs = { root: 'work', path: 'cp1251/cp1251.txt', maxChars: 1 };
+  let firstCursor;
+  const recoveredLines = new Map();
+  for (let i = 0; i < 500; i++) {
+    const page = await f.call('read_document', cArgs);
+    assert.equal(page.isError, undefined);
+    if (!firstCursor) firstCursor = page.structuredContent.nextCursor;
+    const body = page.structuredContent.text.slice(page.structuredContent.text.indexOf('\n') + 1);
+    let charOffset = 0;
+    for (const u of page.structuredContent.units) {
+      const lineNum = u.line;
+      const charsCount = u.chars;
+      const chunkChars = [...body].slice(charOffset, charOffset + charsCount).join('');
+      charOffset += charsCount;
+      recoveredLines.set(lineNum, (recoveredLines.get(lineNum) || '') + chunkChars);
+    }
+    if (!page.structuredContent.nextCursor) break;
+    cArgs.cursor = page.structuredContent.nextCursor;
+  }
+  const originalLines = expectedText.split('\n');
+  for (let idx = 0; idx < originalLines.length; idx++) {
+    const lineNum = idx + 1;
+    assert.equal(recoveredLines.get(lineNum) || '', originalLines[idx]);
+  }
+  const reconstructedText = Array.from({ length: originalLines.length }, (_, idx) => recoveredLines.get(idx + 1) || '').join('\n');
+  assert.equal(reconstructedText, expectedText);
+
+  // AC6: fetch
+  const fetchCp = await f.call('fetch', { id: 'work:cp1251/cp1251.txt' });
+  assert.equal(fetchCp.structuredContent.metadata.format, 'text');
+  assert.equal(fetchCp.structuredContent.metadata.encoding, 'windows-1251');
+  const fetchUtf8 = await f.call('fetch', { id: 'work:cp1251/utf8.txt' });
+  assert.equal(fetchUtf8.structuredContent.metadata.encoding, 'utf-8');
+  const fetchCpBody = fetchCp.structuredContent.text.slice(fetchCp.structuredContent.text.indexOf('\n') + 1);
+  const fetchUtf8Body = fetchUtf8.structuredContent.text.slice(fetchUtf8.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(fetchCpBody, fetchUtf8Body);
+
+  // AC7: search_text
+  const searchCp = await f.call('search_text', { root: 'work', path: 'cp1251/cp1251.txt', query: 'Замещающие' });
+  assert.equal(searchCp.structuredContent.results.length, 1);
+  assert.equal(searchCp.structuredContent.results[0].locator.line, 2);
+  assert.equal(searchCp.structuredContent.results[0].snippet, 'Замещающие сделки: взыскание убытков.');
+
+  const searchTypo = await f.call('search_text', { root: 'work', path: 'cp1251/cp1251-typography.txt', query: 'ёмкость' });
+  assert.equal(searchTypo.structuredContent.results.length, 2);
+  assert.equal(searchTypo.structuredContent.results[0].locator.line, 2);
+  assert.equal(searchTypo.structuredContent.results[1].locator.line, 2);
+
+  let tArgs = { root: 'work', path: 'cp1251/cp1251-typography.txt', query: 'ёмкость', limit: 1 };
+  const typoResults = [];
+  for (let i = 0; i < 10; i++) {
+    const page = await f.call('search_text', tArgs);
+    assert.equal(page.isError, undefined);
+    if (i === 0) {
+      assert.equal(page.structuredContent.results.length, 1);
+      assert.ok(page.structuredContent.nextCursor);
+    }
+    typoResults.push(...page.structuredContent.results);
+    if (!page.structuredContent.nextCursor) {
+      assert.equal(page.structuredContent.truncated, false);
+      break;
+    }
+    tArgs.cursor = page.structuredContent.nextCursor;
+  }
+  assert.equal(typoResults.length, 2);
+  assert.match(typoResults[0].snippet, /ЁМКОСТЬ/);
+  assert.match(typoResults[1].snippet, /ёмкость/);
+
+  // AC8: folder search
+  const folderSearch = await f.call('search_text', { root: 'work', path: 'cp1251', query: 'Замещающие' });
+  const rels = folderSearch.structuredContent.results.map(r => r.relativePath);
+  assert.ok(rels.includes('cp1251/cp1251.txt'));
+  assert.ok(rels.includes('cp1251/utf8.txt'));
+  assert.ok(rels.includes('cp1251/utf8-bom.txt'));
+  assert.ok(!rels.includes('cp1251/bom-cp1251.txt'));
+  assert.ok(!rels.includes('cp1251/damaged-utf8.txt'));
+  assert.ok(!rels.includes('cp1251/binary.txt'));
+  assert.equal(folderSearch.structuredContent.skippedInaccessible, 2);
+  assert.equal(folderSearch.structuredContent.skippedLargeFiles, 0);
+
+  const conn = await f.call('search', { query: 'Замещающие' });
+  assert.ok(conn.structuredContent.results.some(r => r.id === 'work:cp1251/cp1251.txt'));
+  const connFetch = await f.call('fetch', { id: 'work:cp1251/cp1251.txt' });
+  assert.match(connFetch.structuredContent.text, /Замещающие сделки/);
+
+  // AC9: typography and yo
+  const typoRead = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251-typography.txt' });
+  const expectedTypo = CP1251_TYPO.replace(/\r\n/g, '\n');
+  assert.equal(typoRead.structuredContent.text, expectedTypo);
+  assert.equal(typoRead.structuredContent.encoding, 'windows-1251');
+  for (const ch of ['«', '»', '—', '–', '…', '№', '„', '“', '§', '\u00a0', 'Ё', 'ё']) {
+    assert.ok(typoRead.structuredContent.text.includes(ch));
+  }
+  const typoDoc = await f.call('read_document', { root: 'work', path: 'cp1251/cp1251-typography.txt' });
+  const typoDocBody = typoDoc.structuredContent.text.slice(typoDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(typoDocBody, expectedTypo);
+  for (const ch of ['«', '»', '—', '–', '…', '№', '„', '“', '§', '\u00a0', 'Ё', 'ё']) {
+    assert.ok(typoDocBody.includes(ch));
+  }
+  assert.equal(typoDoc.structuredContent.encoding, 'windows-1251');
+  const typoFetch = await f.call('fetch', { id: 'work:cp1251/cp1251-typography.txt' });
+  const typoFetchBody = typoFetch.structuredContent.text.slice(typoFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(typoFetchBody, expectedTypo);
+  for (const ch of ['«', '»', '—', '–', '…', '№', '„', '“', '§', '\u00a0', 'Ё', 'ё']) {
+    assert.ok(typoFetchBody.includes(ch));
+  }
+  assert.equal(typoFetch.structuredContent.metadata.encoding, 'windows-1251');
+
+  const yoSearch = await f.call('search_text', { root: 'work', path: 'cp1251/cp1251-typography.txt', query: 'ЁЛКИН' });
+  assert.equal(yoSearch.structuredContent.results.length, 2);
+  assert.equal(yoSearch.structuredContent.results[0].locator.line, 3);
+  assert.equal(yoSearch.structuredContent.results[1].locator.line, 3);
+
+  // AC10: inspect_document
+  const inspCp = await f.call('inspect_document', { root: 'work', path: 'cp1251/cp1251.txt' });
+  assert.equal(inspCp.structuredContent.format, 'text');
+  assert.equal(inspCp.structuredContent.size, 116);
+  assert.equal(inspCp.structuredContent.lines, 4);
+  assert.equal(inspCp.structuredContent.encoding, 'windows-1251');
+
+  const inspUtf8 = await f.call('inspect_document', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(inspUtf8.structuredContent.encoding, 'utf-8');
+
+  // AC11 encoding in non-lock tests
+  const bomRead = await f.call('read_text_file', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(bomRead.structuredContent.encoding, 'utf-8');
+  const bomFile = await f.call('read_file', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(bomFile.structuredContent.encoding, 'utf-8');
+  const bomDoc = await f.call('read_document', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(bomDoc.structuredContent.encoding, 'utf-8');
+  const bomInsp = await f.call('inspect_document', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(bomInsp.structuredContent.encoding, 'utf-8');
+  const bomFetch = await f.call('fetch', { id: 'work:cp1251/utf8-bom.txt' });
+  assert.equal(bomFetch.structuredContent.metadata.encoding, 'utf-8');
+
+  const alsoRead = await f.call('read_text_file', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  assert.equal(alsoRead.structuredContent.encoding, 'utf-8');
+  const alsoFile = await f.call('read_file', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  assert.equal(alsoFile.structuredContent.encoding, 'utf-8');
+  const alsoDoc = await f.call('read_document', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  assert.equal(alsoDoc.structuredContent.encoding, 'utf-8');
+  const alsoInsp = await f.call('inspect_document', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  assert.equal(alsoInsp.structuredContent.encoding, 'utf-8');
+  const alsoFetch = await f.call('fetch', { id: 'work:cp1251/utf8-also-cp1251.txt' });
+  assert.equal(alsoFetch.structuredContent.metadata.encoding, 'utf-8');
+
+  // AC12: messages
+  for (const tool of ['read_text_file', 'read_file', 'read_document', 'inspect_document']) {
+    const res = await f.call(tool, { root: 'work', path: 'cp1251/bom-cp1251.txt' });
+    assert.equal(res.structuredContent.error.code, 'NOT_TEXT');
+    assert.equal(res.structuredContent.error.message, 'File looks like damaged UTF-8');
+  }
+  const fBom = await f.call('fetch', { id: 'work:cp1251/bom-cp1251.txt' });
+  assert.equal(fBom.structuredContent.error.code, 'NOT_TEXT');
+  assert.equal(fBom.structuredContent.error.message, 'File looks like damaged UTF-8');
+
+  const sBom = await f.call('search_text', { root: 'work', path: 'cp1251/bom-cp1251.txt', query: 'Замещающие' });
+  assert.equal(sBom.structuredContent.error.code, 'NOT_TEXT');
+  assert.equal(sBom.structuredContent.error.message, 'File looks like damaged UTF-8');
+
+  const expectedDamagedText = new TextDecoder('windows-1251').decode(damagedUtf8Bytes).replace(/\r\n/g, '\n');
+  const dRead = await f.call('read_text_file', { root: 'work', path: 'cp1251/damaged-utf8.txt' });
+  assert.equal(dRead.structuredContent.text, expectedDamagedText);
+  assert.equal(dRead.structuredContent.encoding, 'windows-1251');
+  assert.ok(!dRead.structuredContent.text.includes('Замещающие'));
+  assert.ok(!dRead.structuredContent.text.includes('Постановление'));
+
+  const dFile = await f.call('read_file', { root: 'work', path: 'cp1251/damaged-utf8.txt' });
+  assert.equal(dFile.structuredContent.kind, 'text');
+  assert.equal(dFile.structuredContent.text, expectedDamagedText);
+  assert.equal(dFile.structuredContent.encoding, 'windows-1251');
+
+  const dDoc = await f.call('read_document', { root: 'work', path: 'cp1251/damaged-utf8.txt' });
+  assert.equal(dDoc.structuredContent.format, 'text');
+  assert.equal(dDoc.structuredContent.encoding, 'windows-1251');
+  const ddBody = dDoc.structuredContent.text.slice(dDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(ddBody, expectedDamagedText);
+
+  const dInspect = await f.call('inspect_document', { root: 'work', path: 'cp1251/damaged-utf8.txt' });
+  assert.equal(dInspect.structuredContent.format, 'text');
+  assert.equal(dInspect.structuredContent.encoding, 'windows-1251');
+
+  const dFetch = await f.call('fetch', { id: 'work:cp1251/damaged-utf8.txt' });
+  assert.equal(dFetch.structuredContent.metadata.encoding, 'windows-1251');
+  const dfBody = dFetch.structuredContent.text.slice(dFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(dfBody, expectedDamagedText);
+
+  const dSearch = await f.call('search_text', { root: 'work', path: 'cp1251/damaged-utf8.txt', query: '03.03.2023' });
+  assert.equal(dSearch.structuredContent.results.length, 1);
+  assert.equal(dSearch.structuredContent.results[0].locator.line, 3);
+
+  const trRead = await f.call('read_text_file', { root: 'work', path: 'cp1251-ambiguous/truncated-utf8.txt' });
+  assert.equal(trRead.structuredContent.text, 'text: С');
+  assert.equal(trRead.structuredContent.encoding, 'windows-1251');
+
+  const trFile = await f.call('read_file', { root: 'work', path: 'cp1251-ambiguous/truncated-utf8.txt' });
+  assert.equal(trFile.structuredContent.kind, 'text');
+  assert.equal(trFile.structuredContent.text, 'text: С');
+  assert.equal(trFile.structuredContent.encoding, 'windows-1251');
+
+  const trDoc = await f.call('read_document', { root: 'work', path: 'cp1251-ambiguous/truncated-utf8.txt' });
+  assert.equal(trDoc.structuredContent.format, 'text');
+  assert.equal(trDoc.structuredContent.encoding, 'windows-1251');
+  const trdBody = trDoc.structuredContent.text.slice(trDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(trdBody, 'text: С');
+
+  const trInspect = await f.call('inspect_document', { root: 'work', path: 'cp1251-ambiguous/truncated-utf8.txt' });
+  assert.equal(trInspect.structuredContent.format, 'text');
+  assert.equal(trInspect.structuredContent.encoding, 'windows-1251');
+
+  const trFetch = await f.call('fetch', { id: 'work:cp1251-ambiguous/truncated-utf8.txt' });
+  assert.equal(trFetch.structuredContent.metadata.encoding, 'windows-1251');
+  const trfBody = trFetch.structuredContent.text.slice(trFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(trfBody, 'text: С');
+
+  const trSearch = await f.call('search_text', { root: 'work', path: 'cp1251-ambiguous/truncated-utf8.txt', query: 'text' });
+  assert.equal(trSearch.structuredContent.results.length, 1);
+  assert.equal(trSearch.structuredContent.results[0].locator.line, 1);
+  assert.equal(trSearch.structuredContent.results[0].snippet, 'text: С');
+
+  // AC13: negative controls
+  for (const name of ['cp1251/binary.txt', 'cp1251-controls/nul-control.txt', 'cp1251-controls/x98.txt', 'cp1251-controls/sub.txt', 'cp1251-controls/utf16.txt']) {
+    for (const tool of ['read_text_file', 'read_file', 'read_document', 'inspect_document']) {
+      const res = await f.call(tool, { root: 'work', path: name });
+      assert.equal(res.structuredContent.error.code, 'NOT_TEXT', `${tool} ${name}`);
+      assert.equal(res.structuredContent.error.message, 'File is neither UTF-8 nor Windows-1251 text', `${tool} ${name}`);
+    }
+    const fRes = await f.call('fetch', { id: `work:${name}` });
+    assert.equal(fRes.structuredContent.error.code, 'NOT_TEXT');
+    assert.equal(fRes.structuredContent.error.message, 'File is neither UTF-8 nor Windows-1251 text');
+
+    const sRes = await f.call('search_text', { root: 'work', path: name, query: 'Замещающие' });
+    assert.equal(sRes.structuredContent.error.code, 'NOT_TEXT');
+    assert.equal(sRes.structuredContent.error.message, 'File is neither UTF-8 nor Windows-1251 text');
+  }
+
+  // AC16: maxChars on large
+  const lr = await f.call('read_text_file', { root: 'work', path: 'cp1251-large/large-cp1251.txt', maxChars: 1000 });
+  assert.equal(lr.structuredContent.text.length, 1000);
+  assert.equal(lr.structuredContent.truncated, true);
+  assert.equal(lr.structuredContent.encoding, 'windows-1251');
+
+  // AC26: nbsp
+  const nbRead = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251-nbsp.txt' });
+  assert.equal(nbRead.structuredContent.text, 'В\u00a02024, В\u00a02025 — 100');
+  assert.equal(nbRead.structuredContent.encoding, 'windows-1251');
+  assert.equal(nbRead.structuredContent.totalLines, 1);
+
+  const nbFile = await f.call('read_file', { root: 'work', path: 'cp1251/cp1251-nbsp.txt' });
+  assert.equal(nbFile.structuredContent.text, 'В\u00a02024, В\u00a02025 — 100');
+  assert.equal(nbFile.structuredContent.encoding, 'windows-1251');
+  assert.equal(nbFile.structuredContent.kind, 'text');
+
+  const nbDoc = await f.call('read_document', { root: 'work', path: 'cp1251/cp1251-nbsp.txt' });
+  assert.equal(nbDoc.structuredContent.format, 'text');
+  assert.equal(nbDoc.structuredContent.encoding, 'windows-1251');
+  assert.equal(nbDoc.structuredContent.size, 20);
+  assert.equal(nbDoc.structuredContent.lines, 1);
+  const nbDocBody = nbDoc.structuredContent.text.slice(nbDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(nbDocBody, 'В\u00a02024, В\u00a02025 — 100');
+
+  const nbInsp = await f.call('inspect_document', { root: 'work', path: 'cp1251/cp1251-nbsp.txt' });
+  assert.equal(nbInsp.structuredContent.format, 'text');
+  assert.equal(nbInsp.structuredContent.encoding, 'windows-1251');
+  assert.equal(nbInsp.structuredContent.size, 20);
+  assert.equal(nbInsp.structuredContent.lines, 1);
+
+  const nbFetch = await f.call('fetch', { id: 'work:cp1251/cp1251-nbsp.txt' });
+  assert.equal(nbFetch.structuredContent.metadata.encoding, 'windows-1251');
+  const nbFetchBody = nbFetch.structuredContent.text.slice(nbFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(nbFetchBody, 'В\u00a02024, В\u00a02025 — 100');
+
+  const nbSearch = await f.call('search_text', { root: 'work', path: 'cp1251/cp1251-nbsp.txt', query: '2025 — 100' });
+  assert.equal(nbSearch.structuredContent.results.length, 1);
+  assert.equal(nbSearch.structuredContent.results[0].locator.line, 1);
+
+  const nbFolder = await f.call('search_text', { root: 'work', path: 'cp1251', query: '2025 — 100' });
+  assert.equal(nbFolder.structuredContent.results.length, 1);
+  assert.equal(nbFolder.structuredContent.results[0].relativePath, 'cp1251/cp1251-nbsp.txt');
+  assert.equal(nbFolder.structuredContent.results[0].line, 1);
+
+  const nbConn = await f.call('search', { query: '2025 — 100' });
+  assert.ok(nbConn.structuredContent.results.some(r => r.id === 'work:cp1251/cp1251-nbsp.txt'));
+
+  // AC27: ambiguous
+  const ambRead = await f.call('read_text_file', { root: 'work', path: 'cp1251-ambiguous/ambiguous-bytes.txt' });
+  assert.equal(ambRead.structuredContent.text, 'ёяяяяГ');
+  assert.equal(ambRead.structuredContent.encoding, 'windows-1251');
+
+  const ambFile = await f.call('read_file', { root: 'work', path: 'cp1251-ambiguous/ambiguous-bytes.txt' });
+  assert.equal(ambFile.structuredContent.text, 'ёяяяяГ');
+  assert.equal(ambFile.structuredContent.encoding, 'windows-1251');
+
+  const ambDoc = await f.call('read_document', { root: 'work', path: 'cp1251-ambiguous/ambiguous-bytes.txt' });
+  assert.equal(ambDoc.structuredContent.encoding, 'windows-1251');
+  const ambDocBody = ambDoc.structuredContent.text.slice(ambDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(ambDocBody, 'ёяяяяГ');
+
+  const ambInsp = await f.call('inspect_document', { root: 'work', path: 'cp1251-ambiguous/ambiguous-bytes.txt' });
+  assert.equal(ambInsp.structuredContent.encoding, 'windows-1251');
+
+  const ambFetch = await f.call('fetch', { id: 'work:cp1251-ambiguous/ambiguous-bytes.txt' });
+  assert.equal(ambFetch.structuredContent.metadata.encoding, 'windows-1251');
+  const ambFetchBody = ambFetch.structuredContent.text.slice(ambFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(ambFetchBody, 'ёяяяяГ');
+
+  const ambSearch = await f.call('search_text', { root: 'work', path: 'cp1251-ambiguous/ambiguous-bytes.txt', query: 'ёяяяяГ' });
+  assert.equal(ambSearch.structuredContent.results.length, 1);
+  assert.equal(ambSearch.structuredContent.results[0].locator.line, 1);
+
+  const ambFolder = await f.call('search_text', { root: 'work', path: 'cp1251-ambiguous', query: 'ёяяяяГ' });
+  assert.ok(ambFolder.structuredContent.results.some(r => r.relativePath === 'cp1251-ambiguous/ambiguous-bytes.txt'));
+  assert.equal(ambFolder.structuredContent.skippedInaccessible, 0);
+
+  const u16Read = await f.call('read_text_file', { root: 'work', path: 'cp1251-ambiguous/utf16-no-ascii.txt' });
+  assert.equal(u16Read.structuredContent.text, 'яю¬ ');
+  assert.equal(u16Read.structuredContent.encoding, 'windows-1251');
+
+  const u16File = await f.call('read_file', { root: 'work', path: 'cp1251-ambiguous/utf16-no-ascii.txt' });
+  assert.equal(u16File.structuredContent.kind, 'text');
+  assert.equal(u16File.structuredContent.text, 'яю¬ ');
+  assert.equal(u16File.structuredContent.encoding, 'windows-1251');
+
+  const u16Doc = await f.call('read_document', { root: 'work', path: 'cp1251-ambiguous/utf16-no-ascii.txt' });
+  assert.equal(u16Doc.structuredContent.format, 'text');
+  assert.equal(u16Doc.structuredContent.encoding, 'windows-1251');
+  const u16dBody = u16Doc.structuredContent.text.slice(u16Doc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(u16dBody, 'яю¬ ');
+
+  const u16Inspect = await f.call('inspect_document', { root: 'work', path: 'cp1251-ambiguous/utf16-no-ascii.txt' });
+  assert.equal(u16Inspect.structuredContent.format, 'text');
+  assert.equal(u16Inspect.structuredContent.encoding, 'windows-1251');
+
+  const u16Fetch = await f.call('fetch', { id: 'work:cp1251-ambiguous/utf16-no-ascii.txt' });
+  assert.equal(u16Fetch.structuredContent.metadata.encoding, 'windows-1251');
+  const u16fBody = u16Fetch.structuredContent.text.slice(u16Fetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(u16fBody, 'яю¬ ');
+
+  const u16Search = await f.call('search_text', { root: 'work', path: 'cp1251-ambiguous/utf16-no-ascii.txt', query: 'яю¬' });
+  assert.equal(u16Search.structuredContent.results.length, 1);
+  assert.equal(u16Search.structuredContent.results[0].locator.line, 1);
+
+  await writeFile(path.join(cp1251Dir, 'cp1251.txt'), Buffer.from('different length content'));
+  const stale = await f.call('read_document', { root: 'work', path: 'cp1251/cp1251.txt', cursor: firstCursor });
+  assert.equal(stale.structuredContent.error.code, 'STALE_CURSOR');
+});
+
+test('cp1251 lock: UTF-8, BOM, binary, limits and access rules are unchanged', async t => {
+  const f = await fixture(t);
+  const { binaryBytes, cp1251Bytes } = await setupCp1251Fixtures(f);
+  const expectedText = CP1251_TEXT.replace(/\r\n/g, '\n');
+
+  // AC11: utf8.txt
+  const r1 = await f.call('read_text_file', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(r1.isError, undefined);
+  assert.equal(r1.structuredContent.text, expectedText);
+  assert.equal(r1.structuredContent.totalLines, 4);
+  assert.equal(r1.structuredContent.endLine, 4);
+
+  const r2 = await f.call('read_file', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(r2.structuredContent.text, expectedText);
+  assert.equal(r2.structuredContent.totalLines, 4);
+  assert.equal(r2.structuredContent.endLine, 4);
+
+  const doc = await f.call('read_document', { root: 'work', path: 'cp1251/utf8.txt' });
+  assert.equal(doc.structuredContent.lines, 4);
+  assert.equal(doc.structuredContent.size, 192);
+  const docBody = doc.structuredContent.text.slice(doc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(docBody, expectedText);
+
+  // AC5 verification on utf8.txt
+  let uArgs = { root: 'work', path: 'cp1251/utf8.txt', maxChars: 1 };
+  let uFirstCursor;
+  const uRecoveredLines = new Map();
+  for (let i = 0; i < 500; i++) {
+    const page = await f.call('read_document', uArgs);
+    assert.equal(page.isError, undefined);
+    if (!uFirstCursor) uFirstCursor = page.structuredContent.nextCursor;
+    const body = page.structuredContent.text.slice(page.structuredContent.text.indexOf('\n') + 1);
+    let charOffset = 0;
+    for (const u of page.structuredContent.units) {
+      const lineNum = u.line;
+      const charsCount = u.chars;
+      const chunkChars = [...body].slice(charOffset, charOffset + charsCount).join('');
+      charOffset += charsCount;
+      uRecoveredLines.set(lineNum, (uRecoveredLines.get(lineNum) || '') + chunkChars);
+    }
+    if (!page.structuredContent.nextCursor) break;
+    uArgs.cursor = page.structuredContent.nextCursor;
+  }
+  const uOriginalLines = expectedText.split('\n');
+  for (let idx = 0; idx < uOriginalLines.length; idx++) {
+    const lineNum = idx + 1;
+    assert.equal(uRecoveredLines.get(lineNum) || '', uOriginalLines[idx]);
+  }
+  const uReconstructedText = Array.from({ length: uOriginalLines.length }, (_, idx) => uRecoveredLines.get(idx + 1) || '').join('\n');
+  assert.equal(uReconstructedText, expectedText);
+
+  const staleUtf8Path = path.join(f.work, 'stale_utf8.txt');
+  await writeFile(staleUtf8Path, Buffer.from('before rewrite\n'));
+  const sRes = await f.call('read_document', { root: 'work', path: 'stale_utf8.txt', maxChars: 1 });
+  const sCursor = sRes.structuredContent.nextCursor;
+  await writeFile(staleUtf8Path, Buffer.from('different content now\n'));
+  const sErr = await f.call('read_document', { root: 'work', path: 'stale_utf8.txt', cursor: sCursor });
+  assert.equal(sErr.structuredContent.error.code, 'STALE_CURSOR');
+
+  const fetchRes = await f.call('fetch', { id: 'work:cp1251/utf8.txt' });
+  const fetchBody = fetchRes.structuredContent.text.slice(fetchRes.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(fetchBody, expectedText);
+
+  const searchRes = await f.call('search_text', { root: 'work', path: 'cp1251/utf8.txt', query: 'Замещающие' });
+  assert.equal(searchRes.structuredContent.results.length, 1);
+  assert.equal(searchRes.structuredContent.results[0].locator.line, 2);
+  assert.equal(searchRes.structuredContent.results[0].snippet, 'Замещающие сделки: взыскание убытков.');
+
+  // AC11: utf8-bom.txt
+  const bomExpected = `\ufeff${expectedText}`;
+  const b1 = await f.call('read_text_file', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(b1.structuredContent.text, bomExpected);
+  assert.equal(b1.structuredContent.totalLines, 4);
+  assert.equal(b1.structuredContent.endLine, 4);
+
+  const b2 = await f.call('read_file', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(b2.structuredContent.text, bomExpected);
+  assert.equal(b2.structuredContent.totalLines, 4);
+  assert.equal(b2.structuredContent.endLine, 4);
+
+  const bDoc = await f.call('read_document', { root: 'work', path: 'cp1251/utf8-bom.txt' });
+  assert.equal(bDoc.structuredContent.lines, 4);
+  assert.equal(bDoc.structuredContent.size, 195);
+  const bDocBody = bDoc.structuredContent.text.slice(bDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.ok(bDocBody.startsWith('\ufeff'));
+  assert.equal(bDocBody, bomExpected);
+
+  const bFetch = await f.call('fetch', { id: 'work:cp1251/utf8-bom.txt' });
+  const bFetchBody = bFetch.structuredContent.text.slice(bFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.ok(bFetchBody.startsWith('\ufeff'));
+  assert.equal(bFetchBody, bomExpected);
+
+  const bSearch = await f.call('search_text', { root: 'work', path: 'cp1251/utf8-bom.txt', query: 'Замещающие' });
+  assert.equal(bSearch.structuredContent.results.length, 1);
+  assert.equal(bSearch.structuredContent.results[0].locator.line, 2);
+  assert.equal(bSearch.structuredContent.results[0].snippet, 'Замещающие сделки: взыскание убытков.');
+
+  // AC11: utf8-also-cp1251.txt
+  const also1 = await f.call('read_text_file', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  assert.equal(also1.structuredContent.text, '»');
+
+  const also2 = await f.call('read_file', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  assert.equal(also2.structuredContent.text, '»');
+
+  const alsoDoc = await f.call('read_document', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt' });
+  const alsoDocBody = alsoDoc.structuredContent.text.slice(alsoDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(alsoDocBody, '»');
+
+  const alsoFetch = await f.call('fetch', { id: 'work:cp1251/utf8-also-cp1251.txt' });
+  const alsoFetchBody = alsoFetch.structuredContent.text.slice(alsoFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(alsoFetchBody, '»');
+
+  const alsoErr = await f.call('search_text', { root: 'work', path: 'cp1251/utf8-also-cp1251.txt', query: '»' });
+  assert.equal(alsoErr.structuredContent.error.code, 'INVALID_ARGUMENT');
+
+  // AC27: utf8-nul.txt
+  const nul1 = await f.call('read_text_file', { root: 'work', path: 'cp1251-ambiguous/utf8-nul.txt' });
+  assert.equal(nul1.structuredContent.text, 'A\x00B');
+
+  const nul2 = await f.call('read_file', { root: 'work', path: 'cp1251-ambiguous/utf8-nul.txt' });
+  assert.equal(nul2.structuredContent.text, 'A\x00B');
+
+  const nulDoc = await f.call('read_document', { root: 'work', path: 'cp1251-ambiguous/utf8-nul.txt' });
+  const nulDocBody = nulDoc.structuredContent.text.slice(nulDoc.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(nulDocBody, 'A\x00B');
+
+  const nulFetch = await f.call('fetch', { id: 'work:cp1251-ambiguous/utf8-nul.txt' });
+  const nulFetchBody = nulFetch.structuredContent.text.slice(nulFetch.structuredContent.text.indexOf('\n') + 1);
+  assert.equal(nulFetchBody, 'A\x00B');
+
+  const nulSearch = await f.call('search_text', { root: 'work', path: 'cp1251-ambiguous/utf8-nul.txt', query: 'A\x00B' });
+  assert.equal(nulSearch.structuredContent.results.length, 1);
+  assert.equal(nulSearch.structuredContent.results[0].locator.line, 1);
+
+  // AC12: bom-cp1251.txt error codes
+  for (const tool of ['read_text_file', 'read_file', 'read_document', 'inspect_document']) {
+    const res = await f.call(tool, { root: 'work', path: 'cp1251/bom-cp1251.txt' });
+    assert.equal(res.structuredContent.error.code, 'NOT_TEXT');
+  }
+  const fBom = await f.call('fetch', { id: 'work:cp1251/bom-cp1251.txt' });
+  assert.equal(fBom.structuredContent.error.code, 'NOT_TEXT');
+  const sBom = await f.call('search_text', { root: 'work', path: 'cp1251/bom-cp1251.txt', query: 'Замещающие' });
+  assert.equal(sBom.structuredContent.error.code, 'NOT_TEXT');
+
+  // AC13: negative controls error codes
+  for (const name of ['cp1251/binary.txt', 'cp1251-controls/nul-control.txt', 'cp1251-controls/x98.txt', 'cp1251-controls/sub.txt', 'cp1251-controls/utf16.txt']) {
+    for (const tool of ['read_text_file', 'read_file', 'read_document', 'inspect_document']) {
+      const res = await f.call(tool, { root: 'work', path: name });
+      assert.equal(res.structuredContent.error.code, 'NOT_TEXT', `${tool} ${name}`);
+    }
+    const fRes = await f.call('fetch', { id: `work:${name}` });
+    assert.equal(fRes.structuredContent.error.code, 'NOT_TEXT');
+
+    const sRes = await f.call('search_text', { root: 'work', path: name, query: 'Замещающие' });
+    assert.equal(sRes.structuredContent.error.code, 'NOT_TEXT');
+  }
+
+  // AC13: binary.bin
+  const binFile = await f.call('read_file', { root: 'work', path: 'cp1251/binary.bin' });
+  assert.equal(binFile.structuredContent.kind, 'binary');
+  const binRes = binFile.content.find(c => c.type === 'resource');
+  assert.equal(binRes.resource.blob, binaryBytes.toString('base64'));
+
+  // AC14: cp1251.dat
+  const datRead = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251.dat' });
+  assert.equal(datRead.structuredContent.error.code, 'NOT_TEXT');
+  assert.equal(datRead.structuredContent.error.message, 'File is not valid UTF-8. Use read_document for document formats.');
+
+  const datFile = await f.call('read_file', { root: 'work', path: 'cp1251/cp1251.dat' });
+  assert.equal(datFile.structuredContent.kind, 'binary');
+  const datRes = datFile.content.find(c => c.type === 'resource');
+  assert.equal(datRes.resource.blob, cp1251Bytes.toString('base64'));
+
+  const datSearch = await f.call('search_text', { root: 'work', path: 'cp1251', query: 'Замещающие' });
+  assert.ok(!datSearch.structuredContent.results.some(r => r.relativePath.endsWith('cp1251.dat')));
+
+  // AC16: limits
+  const largeSearch = await f.call('search_text', { root: 'work', path: 'cp1251-large', query: 'ОГРОМНЫЙ' });
+  assert.equal(largeSearch.structuredContent.skippedLargeFiles, 1);
+  assert.equal(largeSearch.structuredContent.results.length, 0);
+
+  const hugeRead = await f.call('read_text_file', { root: 'work', path: 'cp1251-huge/huge.txt' });
+  assert.equal(hugeRead.structuredContent.error.code, 'FILE_TOO_LARGE');
+
+  const hugeDoc = await f.call('read_document', { root: 'work', path: 'cp1251-huge/huge.txt' });
+  assert.equal(hugeDoc.structuredContent.error.code, 'FILE_TOO_LARGE');
+
+  const maxCharsErr = await f.call('read_text_file', { root: 'work', path: 'cp1251/cp1251.txt', maxChars: 200001 });
+  assert.equal(maxCharsErr.structuredContent.error.code, 'INVALID_ARGUMENT');
+
+  // AC17: access
+  const envRead = await f.call('read_text_file', { root: 'work', path: 'cp1251-access/.env' });
+  assert.equal(envRead.structuredContent.error.code, 'BLOCKED_PATH');
+  assert.ok(!JSON.stringify(envRead).includes('СЕКРЕТ_1251'));
+
+  const envDoc = await f.call('read_document', { root: 'work', path: 'cp1251-access/.env' });
+  assert.equal(envDoc.structuredContent.error.code, 'BLOCKED_PATH');
+  assert.ok(!JSON.stringify(envDoc).includes('СЕКРЕТ_1251'));
+
+  const escRead = await f.call('read_text_file', { root: 'work', path: 'cp1251-access/escape-cp1251.txt' });
+  assert.ok(['SYMLINK_ESCAPE', 'ACCESS_ERROR'].includes(escRead.structuredContent.error.code));
+  assert.ok(!JSON.stringify(escRead).includes('СЕКРЕТ_1251'));
+
+  const escDoc = await f.call('read_document', { root: 'work', path: 'cp1251-access/escape-cp1251.txt' });
+  assert.ok(['SYMLINK_ESCAPE', 'ACCESS_ERROR'].includes(escDoc.structuredContent.error.code));
+  assert.ok(!JSON.stringify(escDoc).includes('СЕКРЕТ_1251'));
+
+  const relEscRead = await f.call('read_text_file', { root: 'work', path: 'cp1251-access/rel-escape-cp1251.txt' });
+  assert.equal(relEscRead.structuredContent.error.code, 'SYMLINK_ESCAPE');
+  assert.ok(!JSON.stringify(relEscRead).includes('СЕКРЕТ_1251'));
+
+  const relEscDoc = await f.call('read_document', { root: 'work', path: 'cp1251-access/rel-escape-cp1251.txt' });
+  assert.equal(relEscDoc.structuredContent.error.code, 'SYMLINK_ESCAPE');
+  assert.ok(!JSON.stringify(relEscDoc).includes('СЕКРЕТ_1251'));
+
+  const accessSearch = await f.call('search_text', { root: 'work', path: 'cp1251-access', query: 'СЕКРЕТ_1251' });
+  assert.equal(accessSearch.structuredContent.results.length, 0);
+  assert.ok(!JSON.stringify(accessSearch.structuredContent.results).includes('СЕКРЕТ_1251'));
 });

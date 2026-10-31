@@ -15,6 +15,7 @@ mod pdf;
 mod pdf_page;
 mod service;
 mod sheets;
+mod text;
 #[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "windows")))]
 mod tray;
 mod vault;
