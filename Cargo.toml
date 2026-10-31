@@ -1,6 +1,6 @@
 [package]
 name = "local-files"
-version = "2.2.0"
+version = "2.2.1"
 edition = "2024"
 rust-version = "1.92"
 description = "Native tray controller and read-only MCP filesystem server"

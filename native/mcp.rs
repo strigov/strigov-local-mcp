@@ -50,21 +50,21 @@ fn tools() -> Vec<Tool> {
         (
             "search_text",
             "Search inside documents",
-            "Unicode case-insensitive search in UTF-8 text; also searches inside PDF, DOCX, XLSX/XLS, EML, MSG. Pass a document path and root to get every match with page numbers and locators. Narrow root/path for large folders. Reports offline roots and incomplete scans; pass nextCursor back to continue in sorted order.",
+            "Unicode case-insensitive search in UTF-8 or Windows-1251 text; also searches inside PDF, DOCX, XLSX/XLS, EML, MSG. Pass a document path and root to get every match with page numbers and locators. Narrow root/path for large folders. Reports offline roots and incomplete scans; pass nextCursor back to continue in sorted order.",
             json!({"root":{"type":"string","default":"all"},"path":path,"query":{"type":"string","minLength":2,"maxLength":4096},"limit":n(30,100),"cursor":cursor}),
             vec!["query"],
         ),
         (
             "read_text_file",
             "Read text file",
-            "Read UTF-8 text or selected lines. Use read_document for office documents and mail.",
+            "Read UTF-8 or Windows-1251 text or selected lines. Use read_document for office documents and mail.",
             json!({"root":root,"path":text,"startLine":n(1,u32::MAX),"endLine":{"type":"integer","minimum":1},"maxChars":n(200000,200000)}),
             vec!["root", "path"],
         ),
         (
             "read_file",
             "Read file",
-            "Read UTF-8, PDF, DOCX, XLSX/XLS and EML/MSG text with source locations and continuation, including :: container paths. Select page to view a PDF or TIFF page. PNG/JPEG/GIF/WebP/TIFF/BMP and extractable scan pages return oriented images up to 2048 pixels; region fractions zoom into the oriented image. Composite or undecodable PDF pages return a single-page PDF resource. Continue document nextCursor with read_document.",
+            "Read UTF-8/Windows-1251 text, PDF, DOCX, XLSX/XLS and EML/MSG text with source locations and continuation, including :: container paths. Select page to view a PDF or TIFF page. PNG/JPEG/GIF/WebP/TIFF/BMP and extractable scan pages return oriented images up to 2048 pixels; region fractions zoom into the oriented image. Composite or undecodable PDF pages return a single-page PDF resource. Continue document nextCursor with read_document.",
             json!({"root":root,"path":text,"maxChars":n(200000,200000),"page":{"type":"integer","minimum":1,"maximum":1000000},"region":region}),
             vec!["root", "path"],
         ),
@@ -78,7 +78,7 @@ fn tools() -> Vec<Tool> {
         (
             "read_document",
             "Read document",
-            "Read text with source locations: PDF pages (marks OCR layers and scans), DOCX paragraphs/tables with CriticMarkup comments and tracked changes, XLSX/XLS cached values by sheet and row, EML/MSG headers and bodies, plain text. sheet selects one sheet by name or 1-based index. Use archive.zip::member and letter.eml::N paths for ZIP members and attachments. Long documents return nextCursor; pass it back to continue.",
+            "Read text with source locations: PDF pages (marks OCR layers and scans), DOCX paragraphs/tables with CriticMarkup comments and tracked changes, XLSX/XLS cached values by sheet and row, EML/MSG headers and bodies, plain text (UTF-8 or Windows-1251). sheet selects one sheet by name or 1-based index. Use archive.zip::member and letter.eml::N paths for ZIP members and attachments. Long documents return nextCursor; pass it back to continue.",
             json!({"root":root,"path":text,"cursor":cursor,"maxChars":n(crate::documents::DOC_DEFAULT_CHARS as u32,crate::filesystem::OUTPUT_LIMIT as u32),"startPage":{"type":"integer","minimum":1,"maximum":1000000},"endPage":{"type":"integer","minimum":1,"maximum":1000000},"sheet":{"type":"string","minLength":1,"maxLength":256}}),
             vec!["root", "path"],
         ),

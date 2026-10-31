@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Seek},
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -493,10 +493,13 @@ impl Filesystem {
             return Err(error("FILE_TOO_LARGE", "File exceeds the text size limit"));
         }
         let read_size = opened.size;
-        let mut reader = BufReader::new(opened.source.take(read_size + 1));
         let start = number(args, "startLine", 1, usize::MAX)?;
         let requested_end = number(args, "endLine", usize::MAX, usize::MAX)?;
         let max = number(args, "maxChars", OUTPUT_LIMIT, OUTPUT_LIMIT)?;
+        let (encoding, _) =
+            crate::text::scan(BufReader::new(&mut opened.source), read_size, is_text(&p))?;
+        opened.source.rewind().map_err(io_error)?;
+        let mut reader = BufReader::new(opened.source.take(read_size + 1));
         let mut out = String::new();
         let mut chars = 0;
         let mut truncated = false;
@@ -515,13 +518,8 @@ impl Filesystem {
             if !last {
                 line.pop();
             }
-            let text = std::str::from_utf8(&line).map_err(|_| {
-                error(
-                    "NOT_TEXT",
-                    "File is not valid UTF-8. Use read_document for document formats.",
-                )
-            })?;
             if total >= start && total <= requested_end {
+                let text = crate::text::decode(encoding, &line)?;
                 if total > start {
                     if chars < max {
                         out.push('\n');
@@ -530,7 +528,7 @@ impl Filesystem {
                         truncated = true;
                     }
                 }
-                for c in text.strip_suffix('\r').unwrap_or(text).chars() {
+                for c in text.strip_suffix('\r').unwrap_or(&text).chars() {
                     if chars < max {
                         out.push(c);
                         chars += 1;
@@ -552,7 +550,7 @@ impl Filesystem {
             ));
         }
         Ok(
-            json!({"kind":"text","root":id,"path":location_display,"uri":location_uri,"mimeType":mime(&p),"text":out,"startLine":start,"endLine":start+memchr::memchr_iter(b'\n',out.as_bytes()).count(),"totalLines":total,"truncated":truncated}),
+            json!({"kind":"text","root":id,"path":location_display,"uri":location_uri,"mimeType":mime(&p),"encoding":encoding.label(),"text":out,"startLine":start,"endLine":start+memchr::memchr_iter(b'\n',out.as_bytes()).count(),"totalLines":total,"truncated":truncated}),
         )
     }
     fn list(&self, args: &Value) -> Result<Value> {
@@ -783,10 +781,13 @@ impl Filesystem {
                         inaccessible += 1;
                     } else {
                         scanned += buffer.len() as u64;
-                        if let Ok(text) = std::str::from_utf8(&buffer)
-                            && let Some(found) = matcher.find(text)
-                        {
-                            results.push(json!({"root":definition.id,"path":public(&definition.id,&entry.logical),"relativePath":display(&entry.logical),"uri":uri(&definition.id,&entry.logical),"line":memchr::memchr_iter(b'\n',&buffer[..found.start()]).count()+1,"snippet":crate::doc_search::text_snippet(text, found)}));
+                        match crate::text::decode_buffer(&buffer, true) {
+                            Ok((text, _)) => {
+                                if let Some(found) = matcher.find(&text) {
+                                    results.push(json!({"root":definition.id,"path":public(&definition.id,&entry.logical),"relativePath":display(&entry.logical),"uri":uri(&definition.id,&entry.logical),"line":memchr::memchr_iter(b'\n',text[..found.start()].as_bytes()).count()+1,"snippet":crate::doc_search::text_snippet(&text, found)}));
+                                }
+                            }
+                            Err(_) => inaccessible += 1,
                         }
                     }
                 } else if text_search
@@ -1022,5 +1023,1395 @@ fn walk_position(hash: u64, id: &str, components: Vec<String>) -> Cursor {
         p,
         u: 0,
         o: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+
+    const TEXT: &str = "Постановление Верховного Суда РФ\r\nЗамещающие сделки: взыскание убытков.\r\nОпределение от 03.03.2023 N 305-ЭС22-2377\r\n";
+    const TYPO: &str = "«Определение Судебной коллегии» — дело № 305-ЭС22-2377…\r\nУчёт: ЁМКОСТЬ, ёмкость; „цитата“ – § 3,\u{00a0}стр. 2\r\nЁлкин А.Ё. и ёлкин а.ё.\r\n";
+
+    fn cp1251_encode(s: &str) -> Vec<u8> {
+        let (bytes, _, unmappable) = encoding_rs::WINDOWS_1251.encode(s);
+        assert!(!unmappable, "CP1251 encode failed for: {s}");
+        bytes.into_owned()
+    }
+
+    fn new_fs(tmp: &tempfile::TempDir) -> Filesystem {
+        Filesystem::new(Config {
+            version: 1,
+            roots: vec![Root {
+                id: "work".into(),
+                path: tmp.path().into(),
+                nickname: None,
+            }],
+            next_root_id: 1,
+        })
+    }
+
+    fn call_ok(fs: &Filesystem, tool: &str, args: &Value) -> Value {
+        let r = fs.call(tool, args);
+        assert!(r.is_ok(), "{tool} {args}: {:?}", r.as_ref().err().unwrap());
+        r.unwrap()
+    }
+
+    fn call_err(fs: &Filesystem, tool: &str, args: &Value) -> FsError {
+        let r = fs.call(tool, args);
+        assert!(r.is_err(), "{tool} {args}: expected error, got {r:?}");
+        r.unwrap_err()
+    }
+
+    fn depth_cap_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            zip.start_file(
+                *name,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn write_main_fixtures(dir: &Path) {
+        let cp1251_bytes = cp1251_encode(TEXT);
+        assert_eq!(cp1251_bytes.len(), 116);
+        std::fs::write(dir.join("cp1251.txt"), &cp1251_bytes).unwrap();
+
+        let utf8_bytes = TEXT.as_bytes();
+        assert_eq!(utf8_bytes.len(), 192);
+        std::fs::write(dir.join("utf8.txt"), utf8_bytes).unwrap();
+
+        let mut utf8_bom = vec![0xef, 0xbb, 0xbf];
+        utf8_bom.extend_from_slice(utf8_bytes);
+        assert_eq!(utf8_bom.len(), 195);
+        std::fs::write(dir.join("utf8-bom.txt"), &utf8_bom).unwrap();
+
+        let typo_bytes = cp1251_encode(TYPO);
+        std::fs::write(dir.join("cp1251-typography.txt"), &typo_bytes).unwrap();
+
+        std::fs::write(dir.join("utf8-also-cp1251.txt"), [0xc2, 0xbb]).unwrap();
+
+        let mut bom_cp1251 = vec![0xef, 0xbb, 0xbf];
+        bom_cp1251.extend_from_slice(&cp1251_bytes);
+        std::fs::write(dir.join("bom-cp1251.txt"), &bom_cp1251).unwrap();
+
+        let crlf_idx = utf8_bytes.windows(2).position(|w| w == b"\r\n").unwrap() + 2;
+        let mut damaged = Vec::new();
+        damaged.extend_from_slice(&utf8_bytes[..crlf_idx]);
+        damaged.push(0xff);
+        damaged.extend_from_slice(&utf8_bytes[crlf_idx..]);
+        assert_eq!(damaged.len(), 193);
+        std::fs::write(dir.join("damaged-utf8.txt"), &damaged).unwrap();
+
+        let nbsp_bytes: [u8; 20] = [
+            0xC2, 0xA0, 0x32, 0x30, 0x32, 0x34, 0x2C, 0x20, 0xC2, 0xA0, 0x32, 0x30, 0x32, 0x35,
+            0x20, 0x97, 0x20, 0x31, 0x30, 0x30,
+        ];
+        std::fs::write(dir.join("cp1251-nbsp.txt"), nbsp_bytes).unwrap();
+
+        let binary_bytes: Vec<u8> = (0..=255u8).collect();
+        std::fs::write(dir.join("binary.txt"), &binary_bytes).unwrap();
+        std::fs::write(dir.join("binary.bin"), &binary_bytes).unwrap();
+
+        std::fs::write(dir.join("cp1251.dat"), &cp1251_bytes).unwrap();
+    }
+
+    fn write_controls_fixtures(dir: &Path) {
+        let cp1251_bytes = cp1251_encode(TEXT);
+        let mut nul = cp1251_bytes.clone();
+        nul.insert(10, 0x00);
+        std::fs::write(dir.join("nul-control.txt"), &nul).unwrap();
+
+        let mut x98 = cp1251_bytes.clone();
+        x98.insert(10, 0x98);
+        std::fs::write(dir.join("x98.txt"), &x98).unwrap();
+
+        let mut sub = cp1251_bytes;
+        sub.push(0x1a);
+        std::fs::write(dir.join("sub.txt"), &sub).unwrap();
+
+        let mut utf16 = vec![0xff, 0xfe];
+        for c in TEXT.encode_utf16() {
+            utf16.extend_from_slice(&c.to_le_bytes());
+        }
+        std::fs::write(dir.join("utf16.txt"), &utf16).unwrap();
+    }
+
+    fn write_ambiguous_fixtures(dir: &Path) {
+        std::fs::write(dir.join("truncated-utf8.txt"), b"text: \xd1").unwrap();
+        std::fs::write(
+            dir.join("ambiguous-bytes.txt"),
+            [0xb8, 0xff, 0xff, 0xff, 0xff, 0xc3],
+        )
+        .unwrap();
+        std::fs::write(dir.join("utf16-no-ascii.txt"), [0xff, 0xfe, 0xac, 0x20]).unwrap();
+        std::fs::write(dir.join("utf8-nul.txt"), b"A\x00B").unwrap();
+    }
+
+    fn write_large_fixtures(dir: &Path) {
+        let chunk = cp1251_encode("Большой документ ОГРОМНЫЙ\r\n");
+        let target_len = 5_242_881;
+        let reps = (target_len / chunk.len()) + 1;
+        let mut large = chunk.repeat(reps);
+        large.truncate(target_len);
+        assert_eq!(large.len(), target_len);
+        std::fs::write(dir.join("large-cp1251.txt"), &large).unwrap();
+    }
+
+    fn write_huge_fixtures(dir: &Path) {
+        let f = File::create(dir.join("huge.txt")).unwrap();
+        f.set_len(67_108_865).unwrap();
+    }
+
+    fn write_zip_fixtures(dir: &Path) {
+        let cp1251_bytes = cp1251_encode(TEXT);
+        let zip_bytes = depth_cap_zip(&[("cp1251.txt", &cp1251_bytes)]);
+        std::fs::write(dir.join("archive.zip"), &zip_bytes).unwrap();
+    }
+
+    #[test]
+    fn cp1251_text_reads_match_utf8_in_every_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+        let expected_text = TEXT.replace("\r\n", "\n");
+
+        let cp_read = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251.txt"}),
+        );
+        let utf8_read = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(cp_read["text"], expected_text);
+        assert_eq!(utf8_read["text"], expected_text);
+        assert_eq!(cp_read["totalLines"], 4);
+        assert_eq!(cp_read["endLine"], 4);
+        assert_eq!(utf8_read["totalLines"], 4);
+        assert_eq!(utf8_read["endLine"], 4);
+        assert_eq!(cp_read["encoding"], "windows-1251");
+        assert_eq!(utf8_read["encoding"], "utf-8");
+
+        let cp_file = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "cp1251.txt"}),
+        );
+        assert_eq!(cp_file["kind"], "text");
+        assert_eq!(cp_file["mimeType"], "text/plain");
+        assert_eq!(cp_file["encoding"], "windows-1251");
+        assert_eq!(cp_file["text"], expected_text);
+        assert!(cp_file.get("blob").is_none());
+
+        let utf8_file = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(utf8_file["encoding"], "utf-8");
+
+        let cp_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "cp1251.txt"}),
+        );
+        let utf8_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(cp_doc["format"], "text");
+        assert_eq!(cp_doc["encoding"], "windows-1251");
+        assert_eq!(cp_doc["size"], 116);
+        assert_eq!(cp_doc["lines"], 4);
+        assert_eq!(cp_doc["totalUnits"], 4);
+        assert_eq!(utf8_doc["encoding"], "utf-8");
+
+        let cp_doc_text = cp_doc["text"].as_str().unwrap();
+        let utf8_doc_text = utf8_doc["text"].as_str().unwrap();
+        let cp_doc_body = &cp_doc_text[cp_doc_text.find('\n').unwrap() + 1..];
+        let utf8_doc_body = &utf8_doc_text[utf8_doc_text.find('\n').unwrap() + 1..];
+        assert_eq!(cp_doc_body, utf8_doc_body);
+        assert_eq!(cp_doc_body, expected_text);
+
+        let cp_fetch = call_ok(&fs, "fetch", &json!({"id": "work:cp1251.txt"}));
+        let utf8_fetch = call_ok(&fs, "fetch", &json!({"id": "work:utf8.txt"}));
+        assert_eq!(cp_fetch["metadata"]["format"], "text");
+        assert_eq!(cp_fetch["metadata"]["encoding"], "windows-1251");
+        assert_eq!(utf8_fetch["metadata"]["encoding"], "utf-8");
+
+        let cp_fetch_text = cp_fetch["text"].as_str().unwrap();
+        let utf8_fetch_text = utf8_fetch["text"].as_str().unwrap();
+        let cp_fetch_body = &cp_fetch_text[cp_fetch_text.find('\n').unwrap() + 1..];
+        let utf8_fetch_body = &utf8_fetch_text[utf8_fetch_text.find('\n').unwrap() + 1..];
+        assert_eq!(cp_fetch_body, utf8_fetch_body);
+
+        let search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "cp1251.txt", "query": "Замещающие"}),
+        );
+        let results = search["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["locator"]["line"], 2);
+        assert_eq!(
+            results[0]["snippet"],
+            "Замещающие сделки: взыскание убытков."
+        );
+
+        let cp_inspect = call_ok(
+            &fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "cp1251.txt"}),
+        );
+        assert_eq!(cp_inspect["format"], "text");
+        assert_eq!(cp_inspect["size"], 116);
+        assert_eq!(cp_inspect["lines"], 4);
+        assert_eq!(cp_inspect["encoding"], "windows-1251");
+
+        let utf8_inspect = call_ok(
+            &fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(utf8_inspect["encoding"], "utf-8");
+
+        let b_read = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b_read["encoding"], "utf-8");
+        let b_file = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b_file["encoding"], "utf-8");
+        let b_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b_doc["encoding"], "utf-8");
+        let b_inspect = call_ok(
+            &fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b_inspect["encoding"], "utf-8");
+        let b_fetch = call_ok(&fs, "fetch", &json!({"id": "work:utf8-bom.txt"}));
+        assert_eq!(b_fetch["metadata"]["encoding"], "utf-8");
+
+        let a_read = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        assert_eq!(a_read["encoding"], "utf-8");
+        let a_file = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        assert_eq!(a_file["encoding"], "utf-8");
+        let a_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        assert_eq!(a_doc["encoding"], "utf-8");
+        let a_inspect = call_ok(
+            &fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        assert_eq!(a_inspect["encoding"], "utf-8");
+        let a_fetch = call_ok(&fs, "fetch", &json!({"id": "work:utf8-also-cp1251.txt"}));
+        assert_eq!(a_fetch["metadata"]["encoding"], "utf-8");
+    }
+
+    #[test]
+    fn cp1251_ranges_max_chars_and_cursors() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+        let expected_text = TEXT.replace("\r\n", "\n");
+
+        let r1 = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251.txt", "startLine": 2, "endLine": 2}),
+        );
+        assert_eq!(r1["text"], "Замещающие сделки: взыскание убытков.");
+        assert_eq!(r1["startLine"], 2);
+        assert_eq!(r1["endLine"], 2);
+
+        let r2 = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251.txt", "maxChars": 5}),
+        );
+        assert_eq!(r2["text"], "Поста");
+        assert_eq!(r2["truncated"], true);
+
+        let err = call_err(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251.txt", "startLine": 3, "endLine": 2}),
+        );
+        assert_eq!(err.code, "INVALID_RANGE");
+
+        let mut doc_args = json!({"root": "work", "path": "cp1251.txt", "maxChars": 1});
+        let mut first_cursor: Option<String> = None;
+        let mut recovered_lines: std::collections::BTreeMap<u64, String> =
+            std::collections::BTreeMap::new();
+        loop {
+            let res = call_ok(&fs, "read_document", &doc_args);
+            if first_cursor.is_none() {
+                first_cursor = res
+                    .get("nextCursor")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+            }
+            let t = res["text"].as_str().unwrap();
+            let body = &t[t.find('\n').unwrap() + 1..];
+            let units = res["units"].as_array().unwrap();
+            let mut char_offset = 0;
+            for u in units {
+                let line_num = u["line"].as_u64().unwrap();
+                let chars_count = u["chars"].as_u64().unwrap() as usize;
+                let chunk_chars: String =
+                    body.chars().skip(char_offset).take(chars_count).collect();
+                char_offset += chars_count;
+                recovered_lines
+                    .entry(line_num)
+                    .or_default()
+                    .push_str(&chunk_chars);
+            }
+            if let Some(cursor) = res.get("nextCursor").and_then(|c| c.as_str()) {
+                doc_args["cursor"] = json!(cursor);
+            } else {
+                break;
+            }
+        }
+        let original_lines: Vec<&str> = expected_text.split('\n').collect();
+        assert_eq!(recovered_lines.len(), original_lines.len());
+        for (idx, orig_line) in original_lines.iter().enumerate() {
+            let line_num = (idx + 1) as u64;
+            assert_eq!(
+                recovered_lines
+                    .get(&line_num)
+                    .map(|s| s.as_str())
+                    .unwrap_or(""),
+                *orig_line
+            );
+        }
+        let reconstructed_text = (1..=original_lines.len())
+            .map(|i| {
+                recovered_lines
+                    .get(&(i as u64))
+                    .map(|s| s.as_str())
+                    .unwrap_or("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(reconstructed_text, expected_text);
+
+        std::fs::write(tmp.path().join("cp1251.txt"), b"different length content").unwrap();
+        let stale_err = call_err(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "cp1251.txt", "cursor": first_cursor.unwrap()}),
+        );
+        assert_eq!(stale_err.code, "STALE_CURSOR");
+
+        let mut search_args = json!({
+            "root": "work",
+            "path": "cp1251-typography.txt",
+            "query": "ёмкость",
+            "limit": 1
+        });
+        let mut snippets = Vec::new();
+        let mut first = true;
+        loop {
+            let res = call_ok(&fs, "search_text", &search_args);
+            if first {
+                assert_eq!(res["results"].as_array().unwrap().len(), 1);
+                assert!(res.get("nextCursor").and_then(|c| c.as_str()).is_some());
+                first = false;
+            }
+            if let Some(arr) = res["results"].as_array() {
+                for m in arr {
+                    snippets.push(m["snippet"].as_str().unwrap().to_string());
+                }
+            }
+            if let Some(cursor) = res.get("nextCursor").and_then(|c| c.as_str()) {
+                search_args["cursor"] = json!(cursor);
+            } else {
+                assert_eq!(res["truncated"], false);
+                break;
+            }
+        }
+        assert_eq!(snippets.len(), 2);
+        assert!(snippets[0].contains("ЁМКОСТЬ"));
+        assert!(snippets[1].contains("ёмкость"));
+    }
+
+    #[test]
+    fn cp1251_typography_and_yo() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+        let expected_typo = TYPO.replace("\r\n", "\n");
+
+        let r = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251-typography.txt"}),
+        );
+        assert_eq!(r["text"], expected_typo);
+        assert_eq!(r["encoding"], "windows-1251");
+        for ch in [
+            '«', '»', '—', '–', '…', '№', '„', '“', '§', '\u{00a0}', 'Ё', 'ё',
+        ] {
+            assert!(r["text"].as_str().unwrap().contains(ch));
+        }
+
+        let doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "cp1251-typography.txt"}),
+        );
+        assert_eq!(doc["encoding"], "windows-1251");
+        let doc_text = doc["text"].as_str().unwrap();
+        let doc_body = &doc_text[doc_text.find('\n').unwrap() + 1..];
+        assert_eq!(doc_body, expected_typo);
+        for ch in [
+            '«', '»', '—', '–', '…', '№', '„', '“', '§', '\u{00a0}', 'Ё', 'ё',
+        ] {
+            assert!(doc_body.contains(ch));
+        }
+
+        let fetch = call_ok(&fs, "fetch", &json!({"id": "work:cp1251-typography.txt"}));
+        assert_eq!(fetch["metadata"]["encoding"], "windows-1251");
+        let fetch_text = fetch["text"].as_str().unwrap();
+        let fetch_body = &fetch_text[fetch_text.find('\n').unwrap() + 1..];
+        assert_eq!(fetch_body, expected_typo);
+        for ch in [
+            '«', '»', '—', '–', '…', '№', '„', '“', '§', '\u{00a0}', 'Ё', 'ё',
+        ] {
+            assert!(fetch_body.contains(ch));
+        }
+
+        let search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "cp1251-typography.txt", "query": "ЁЛКИН"}),
+        );
+        let results = search["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["locator"]["line"], 3);
+        assert_eq!(results[1]["locator"]["line"], 3);
+    }
+
+    #[test]
+    fn cp1251_folder_search_counts_undecodable() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+
+        let search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "query": "Замещающие"}),
+        );
+        let results = search["results"].as_array().unwrap();
+        let rel_paths: Vec<&str> = results
+            .iter()
+            .map(|r| r["relativePath"].as_str().unwrap())
+            .collect();
+
+        assert!(rel_paths.contains(&"cp1251.txt"));
+        assert!(rel_paths.contains(&"utf8.txt"));
+        assert!(rel_paths.contains(&"utf8-bom.txt"));
+
+        assert!(!rel_paths.contains(&"bom-cp1251.txt"));
+        assert!(!rel_paths.contains(&"damaged-utf8.txt"));
+        assert!(!rel_paths.contains(&"binary.txt"));
+
+        let cp_match = results
+            .iter()
+            .find(|r| r["relativePath"] == "cp1251.txt")
+            .unwrap();
+        assert_eq!(cp_match["line"], 2);
+        assert!(
+            cp_match["snippet"]
+                .as_str()
+                .unwrap()
+                .contains("Замещающие сделки")
+        );
+
+        assert_eq!(search["skippedInaccessible"], 2);
+        assert_eq!(search["skippedLargeFiles"], 0);
+
+        let connector = call_ok(&fs, "search", &json!({"query": "Замещающие"}));
+        let conn_results = connector["results"].as_array().unwrap();
+        assert!(conn_results.iter().any(|r| r["id"] == "work:cp1251.txt"));
+
+        let fetch = call_ok(&fs, "fetch", &json!({"id": "work:cp1251.txt"}));
+        let text = fetch["text"].as_str().unwrap();
+        assert!(text.contains("Замещающие сделки"));
+    }
+
+    #[test]
+    fn cp1251_zip_member_and_limits() {
+        let zip_tmp = tempfile::tempdir().unwrap();
+        write_zip_fixtures(zip_tmp.path());
+        let zip_fs = new_fs(&zip_tmp);
+
+        let zip_doc = call_ok(
+            &zip_fs,
+            "read_document",
+            &json!({"root": "work", "path": "archive.zip::cp1251.txt"}),
+        );
+        assert_eq!(zip_doc["format"], "text");
+        assert_eq!(zip_doc["encoding"], "windows-1251");
+        let expected_text = TEXT.replace("\r\n", "\n");
+        let t = zip_doc["text"].as_str().unwrap();
+        let body = &t[t.find('\n').unwrap() + 1..];
+        assert_eq!(body, expected_text);
+
+        let large_tmp = tempfile::tempdir().unwrap();
+        write_large_fixtures(large_tmp.path());
+        let large_fs = new_fs(&large_tmp);
+
+        let search = call_ok(
+            &large_fs,
+            "search_text",
+            &json!({"root": "work", "query": "ОГРОМНЫЙ"}),
+        );
+        assert_eq!(search["skippedLargeFiles"], 1);
+        let results = search["results"].as_array().unwrap();
+        assert!(
+            !results
+                .iter()
+                .any(|r| r["relativePath"] == "large-cp1251.txt")
+        );
+
+        let read_large = call_ok(
+            &large_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "large-cp1251.txt", "maxChars": 1000}),
+        );
+        let s = read_large["text"].as_str().unwrap();
+        assert_eq!(s.chars().count(), 1000);
+        assert_eq!(read_large["truncated"], true);
+        assert_eq!(read_large["encoding"], "windows-1251");
+
+        let huge_tmp = tempfile::tempdir().unwrap();
+        write_huge_fixtures(huge_tmp.path());
+        let huge_fs = new_fs(&huge_tmp);
+
+        let err1 = call_err(
+            &huge_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "huge.txt"}),
+        );
+        assert_eq!(err1.code, "FILE_TOO_LARGE");
+
+        let err2 = call_err(
+            &huge_fs,
+            "read_document",
+            &json!({"root": "work", "path": "huge.txt"}),
+        );
+        assert_eq!(err2.code, "FILE_TOO_LARGE");
+
+        let err3 = call_err(
+            &large_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "large-cp1251.txt", "maxChars": 200_001}),
+        );
+        assert_eq!(err3.code, "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn cp1251_damaged_and_binary_messages() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+
+        for tool in [
+            "read_text_file",
+            "read_file",
+            "read_document",
+            "inspect_document",
+        ] {
+            let err = call_err(
+                &fs,
+                tool,
+                &json!({"root": "work", "path": "bom-cp1251.txt"}),
+            );
+            assert_eq!(err.code, "NOT_TEXT", "{tool}");
+            assert_eq!(err.message, "File looks like damaged UTF-8", "{tool}");
+        }
+        let fetch_err = call_err(&fs, "fetch", &json!({"id": "work:bom-cp1251.txt"}));
+        assert_eq!(fetch_err.code, "NOT_TEXT");
+        assert_eq!(fetch_err.message, "File looks like damaged UTF-8");
+
+        let search_err = call_err(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "bom-cp1251.txt", "query": "Замещающие"}),
+        );
+        assert_eq!(search_err.code, "NOT_TEXT");
+        assert_eq!(search_err.message, "File looks like damaged UTF-8");
+
+        let ctrl_tmp = tempfile::tempdir().unwrap();
+        write_controls_fixtures(ctrl_tmp.path());
+        let ctrl_fs = new_fs(&ctrl_tmp);
+
+        for name in ["nul-control.txt", "x98.txt", "sub.txt", "utf16.txt"] {
+            for tool in [
+                "read_text_file",
+                "read_file",
+                "read_document",
+                "inspect_document",
+            ] {
+                let err = call_err(&ctrl_fs, tool, &json!({"root": "work", "path": name}));
+                assert_eq!(err.code, "NOT_TEXT", "{tool} {name}");
+                assert_eq!(
+                    err.message, "File is neither UTF-8 nor Windows-1251 text",
+                    "{tool} {name}"
+                );
+            }
+            let f_err = call_err(&ctrl_fs, "fetch", &json!({"id": format!("work:{name}")}));
+            assert_eq!(f_err.code, "NOT_TEXT", "fetch {name}");
+            assert_eq!(
+                f_err.message, "File is neither UTF-8 nor Windows-1251 text",
+                "fetch {name}"
+            );
+
+            let s_err = call_err(
+                &ctrl_fs,
+                "search_text",
+                &json!({"root": "work", "path": name, "query": "Замещающие"}),
+            );
+            assert_eq!(s_err.code, "NOT_TEXT", "search_text {name}");
+            assert_eq!(
+                s_err.message, "File is neither UTF-8 nor Windows-1251 text",
+                "search_text {name}"
+            );
+        }
+
+        for tool in [
+            "read_text_file",
+            "read_file",
+            "read_document",
+            "inspect_document",
+        ] {
+            let err = call_err(&fs, tool, &json!({"root": "work", "path": "binary.txt"}));
+            assert_eq!(err.code, "NOT_TEXT", "{tool} binary.txt");
+            assert_eq!(
+                err.message, "File is neither UTF-8 nor Windows-1251 text",
+                "{tool} binary.txt"
+            );
+        }
+        let b_fetch = call_err(&fs, "fetch", &json!({"id": "work:binary.txt"}));
+        assert_eq!(b_fetch.code, "NOT_TEXT");
+        assert_eq!(
+            b_fetch.message,
+            "File is neither UTF-8 nor Windows-1251 text"
+        );
+
+        let b_search = call_err(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "binary.txt", "query": "Замещающие"}),
+        );
+        assert_eq!(b_search.code, "NOT_TEXT");
+        assert_eq!(
+            b_search.message,
+            "File is neither UTF-8 nor Windows-1251 text"
+        );
+    }
+
+    #[test]
+    fn cp1251_nbsp_and_ambiguous_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+
+        let r1 = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251-nbsp.txt"}),
+        );
+        assert_eq!(r1["text"], "В\u{00a0}2024, В\u{00a0}2025 — 100");
+        assert_eq!(r1["encoding"], "windows-1251");
+        assert_eq!(r1["totalLines"], 1);
+
+        let r2 = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "cp1251-nbsp.txt"}),
+        );
+        assert_eq!(r2["text"], "В\u{00a0}2024, В\u{00a0}2025 — 100");
+        assert_eq!(r2["encoding"], "windows-1251");
+        assert_eq!(r2["kind"], "text");
+
+        let doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "cp1251-nbsp.txt"}),
+        );
+        assert_eq!(doc["format"], "text");
+        assert_eq!(doc["encoding"], "windows-1251");
+        assert_eq!(doc["size"], 20);
+        assert_eq!(doc["lines"], 1);
+        let doc_text = doc["text"].as_str().unwrap();
+        let doc_body = &doc_text[doc_text.find('\n').unwrap() + 1..];
+        assert_eq!(doc_body, "В\u{00a0}2024, В\u{00a0}2025 — 100");
+
+        let inspect = call_ok(
+            &fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "cp1251-nbsp.txt"}),
+        );
+        assert_eq!(inspect["format"], "text");
+        assert_eq!(inspect["encoding"], "windows-1251");
+        assert_eq!(inspect["size"], 20);
+        assert_eq!(inspect["lines"], 1);
+
+        let fetch = call_ok(&fs, "fetch", &json!({"id": "work:cp1251-nbsp.txt"}));
+        assert_eq!(fetch["metadata"]["encoding"], "windows-1251");
+        let fetch_text = fetch["text"].as_str().unwrap();
+        let fetch_body = &fetch_text[fetch_text.find('\n').unwrap() + 1..];
+        assert_eq!(fetch_body, "В\u{00a0}2024, В\u{00a0}2025 — 100");
+
+        let search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "cp1251-nbsp.txt", "query": "2025 — 100"}),
+        );
+        let res = search["results"].as_array().unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0]["locator"]["line"], 1);
+
+        let folder = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "query": "2025 — 100"}),
+        );
+        let f_res = folder["results"].as_array().unwrap();
+        assert_eq!(f_res.len(), 1);
+        assert_eq!(f_res[0]["relativePath"], "cp1251-nbsp.txt");
+        assert_eq!(f_res[0]["line"], 1);
+
+        let conn = call_ok(&fs, "search", &json!({"query": "2025 — 100"}));
+        let c_res = conn["results"].as_array().unwrap();
+        assert!(c_res.iter().any(|r| r["id"] == "work:cp1251-nbsp.txt"));
+
+        let damaged_bytes = std::fs::read(tmp.path().join("damaged-utf8.txt")).unwrap();
+        let (damaged_decoded, _, _) = encoding_rs::WINDOWS_1251.decode(&damaged_bytes);
+        let expected_damaged = damaged_decoded.replace("\r\n", "\n");
+
+        let damaged_read = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "damaged-utf8.txt"}),
+        );
+        assert_eq!(damaged_read["text"], expected_damaged);
+        assert_eq!(damaged_read["encoding"], "windows-1251");
+        assert!(
+            !damaged_read["text"]
+                .as_str()
+                .unwrap()
+                .contains("Замещающие")
+        );
+        assert!(
+            !damaged_read["text"]
+                .as_str()
+                .unwrap()
+                .contains("Постановление")
+        );
+
+        let damaged_file = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "damaged-utf8.txt"}),
+        );
+        assert_eq!(damaged_file["kind"], "text");
+        assert_eq!(damaged_file["text"], expected_damaged);
+        assert_eq!(damaged_file["encoding"], "windows-1251");
+
+        let damaged_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "damaged-utf8.txt"}),
+        );
+        assert_eq!(damaged_doc["format"], "text");
+        assert_eq!(damaged_doc["encoding"], "windows-1251");
+        let dd_text = damaged_doc["text"].as_str().unwrap();
+        assert_eq!(
+            &dd_text[dd_text.find('\n').unwrap() + 1..],
+            expected_damaged
+        );
+
+        let damaged_inspect = call_ok(
+            &fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "damaged-utf8.txt"}),
+        );
+        assert_eq!(damaged_inspect["format"], "text");
+        assert_eq!(damaged_inspect["encoding"], "windows-1251");
+
+        let damaged_fetch = call_ok(&fs, "fetch", &json!({"id": "work:damaged-utf8.txt"}));
+        assert_eq!(damaged_fetch["metadata"]["encoding"], "windows-1251");
+        let df_text = damaged_fetch["text"].as_str().unwrap();
+        assert_eq!(
+            &df_text[df_text.find('\n').unwrap() + 1..],
+            expected_damaged
+        );
+
+        let damaged_search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "damaged-utf8.txt", "query": "03.03.2023"}),
+        );
+        let d_res = damaged_search["results"].as_array().unwrap();
+        assert_eq!(d_res.len(), 1);
+        assert_eq!(d_res[0]["locator"]["line"], 3);
+
+        let amb_tmp = tempfile::tempdir().unwrap();
+        write_ambiguous_fixtures(amb_tmp.path());
+        let amb_fs = new_fs(&amb_tmp);
+
+        let trunc_read = call_ok(
+            &amb_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "truncated-utf8.txt"}),
+        );
+        assert_eq!(trunc_read["text"], "text: С");
+        assert_eq!(trunc_read["encoding"], "windows-1251");
+
+        let trunc_file = call_ok(
+            &amb_fs,
+            "read_file",
+            &json!({"root": "work", "path": "truncated-utf8.txt"}),
+        );
+        assert_eq!(trunc_file["kind"], "text");
+        assert_eq!(trunc_file["text"], "text: С");
+        assert_eq!(trunc_file["encoding"], "windows-1251");
+
+        let trunc_doc = call_ok(
+            &amb_fs,
+            "read_document",
+            &json!({"root": "work", "path": "truncated-utf8.txt"}),
+        );
+        assert_eq!(trunc_doc["format"], "text");
+        assert_eq!(trunc_doc["encoding"], "windows-1251");
+        let td_text = trunc_doc["text"].as_str().unwrap();
+        assert_eq!(&td_text[td_text.find('\n').unwrap() + 1..], "text: С");
+
+        let trunc_inspect = call_ok(
+            &amb_fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "truncated-utf8.txt"}),
+        );
+        assert_eq!(trunc_inspect["format"], "text");
+        assert_eq!(trunc_inspect["encoding"], "windows-1251");
+
+        let trunc_fetch = call_ok(&amb_fs, "fetch", &json!({"id": "work:truncated-utf8.txt"}));
+        assert_eq!(trunc_fetch["metadata"]["encoding"], "windows-1251");
+        let tf_text = trunc_fetch["text"].as_str().unwrap();
+        assert_eq!(&tf_text[tf_text.find('\n').unwrap() + 1..], "text: С");
+
+        let trunc_search = call_ok(
+            &amb_fs,
+            "search_text",
+            &json!({"root": "work", "path": "truncated-utf8.txt", "query": "text"}),
+        );
+        let t_res = trunc_search["results"].as_array().unwrap();
+        assert_eq!(t_res.len(), 1);
+        assert_eq!(t_res[0]["locator"]["line"], 1);
+        assert_eq!(t_res[0]["snippet"], "text: С");
+
+        let amb_read = call_ok(
+            &amb_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "ambiguous-bytes.txt"}),
+        );
+        assert_eq!(amb_read["text"], "ёяяяяГ");
+        assert_eq!(amb_read["encoding"], "windows-1251");
+
+        let amb_file = call_ok(
+            &amb_fs,
+            "read_file",
+            &json!({"root": "work", "path": "ambiguous-bytes.txt"}),
+        );
+        assert_eq!(amb_file["text"], "ёяяяяГ");
+        assert_eq!(amb_file["encoding"], "windows-1251");
+
+        let amb_doc = call_ok(
+            &amb_fs,
+            "read_document",
+            &json!({"root": "work", "path": "ambiguous-bytes.txt"}),
+        );
+        assert_eq!(amb_doc["encoding"], "windows-1251");
+        let amb_t = amb_doc["text"].as_str().unwrap();
+        assert_eq!(&amb_t[amb_t.find('\n').unwrap() + 1..], "ёяяяяГ");
+
+        let amb_inspect = call_ok(
+            &amb_fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "ambiguous-bytes.txt"}),
+        );
+        assert_eq!(amb_inspect["encoding"], "windows-1251");
+
+        let amb_fetch = call_ok(&amb_fs, "fetch", &json!({"id": "work:ambiguous-bytes.txt"}));
+        assert_eq!(amb_fetch["metadata"]["encoding"], "windows-1251");
+        let a_t = amb_fetch["text"].as_str().unwrap();
+        assert_eq!(&a_t[a_t.find('\n').unwrap() + 1..], "ёяяяяГ");
+
+        let amb_search = call_ok(
+            &amb_fs,
+            "search_text",
+            &json!({"root": "work", "path": "ambiguous-bytes.txt", "query": "ёяяяяГ"}),
+        );
+        let a_res = amb_search["results"].as_array().unwrap();
+        assert_eq!(a_res.len(), 1);
+        assert_eq!(a_res[0]["locator"]["line"], 1);
+
+        let amb_folder = call_ok(
+            &amb_fs,
+            "search_text",
+            &json!({"root": "work", "query": "ёяяяяГ"}),
+        );
+        let af_res = amb_folder["results"].as_array().unwrap();
+        assert!(
+            af_res
+                .iter()
+                .any(|r| r["relativePath"] == "ambiguous-bytes.txt")
+        );
+        assert_eq!(amb_folder["skippedInaccessible"], 0);
+
+        let u16_read = call_ok(
+            &amb_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf16-no-ascii.txt"}),
+        );
+        assert_eq!(u16_read["text"], "яю¬ ");
+        assert_eq!(u16_read["encoding"], "windows-1251");
+
+        let u16_file = call_ok(
+            &amb_fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf16-no-ascii.txt"}),
+        );
+        assert_eq!(u16_file["kind"], "text");
+        assert_eq!(u16_file["text"], "яю¬ ");
+        assert_eq!(u16_file["encoding"], "windows-1251");
+
+        let u16_doc = call_ok(
+            &amb_fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf16-no-ascii.txt"}),
+        );
+        assert_eq!(u16_doc["format"], "text");
+        assert_eq!(u16_doc["encoding"], "windows-1251");
+        let u16_d_text = u16_doc["text"].as_str().unwrap();
+        assert_eq!(&u16_d_text[u16_d_text.find('\n').unwrap() + 1..], "яю¬ ");
+
+        let u16_inspect = call_ok(
+            &amb_fs,
+            "inspect_document",
+            &json!({"root": "work", "path": "utf16-no-ascii.txt"}),
+        );
+        assert_eq!(u16_inspect["format"], "text");
+        assert_eq!(u16_inspect["encoding"], "windows-1251");
+
+        let u16_fetch = call_ok(&amb_fs, "fetch", &json!({"id": "work:utf16-no-ascii.txt"}));
+        assert_eq!(u16_fetch["metadata"]["encoding"], "windows-1251");
+        let u16_f_text = u16_fetch["text"].as_str().unwrap();
+        assert_eq!(&u16_f_text[u16_f_text.find('\n').unwrap() + 1..], "яю¬ ");
+
+        let u16_search = call_ok(
+            &amb_fs,
+            "search_text",
+            &json!({"root": "work", "path": "utf16-no-ascii.txt", "query": "яю¬"}),
+        );
+        let u_res = u16_search["results"].as_array().unwrap();
+        assert_eq!(u_res.len(), 1);
+        assert_eq!(u_res[0]["locator"]["line"], 1);
+    }
+
+    #[test]
+    fn cp1251_lock_utf8_and_bom_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+        let expected_text = TEXT.replace("\r\n", "\n");
+
+        let r1 = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(r1["text"], expected_text);
+        assert_eq!(r1["totalLines"], 4);
+        assert_eq!(r1["endLine"], 4);
+
+        let r2 = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(r2["text"], expected_text);
+        assert_eq!(r2["totalLines"], 4);
+        assert_eq!(r2["endLine"], 4);
+
+        let doc1 = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8.txt"}),
+        );
+        assert_eq!(doc1["lines"], 4);
+        assert_eq!(doc1["size"], 192);
+        let d1_text = doc1["text"].as_str().unwrap();
+        assert_eq!(&d1_text[d1_text.find('\n').unwrap() + 1..], expected_text);
+
+        // Verification of cursor reconstruction on utf8.txt
+        let mut u_doc_args = json!({"root": "work", "path": "utf8.txt", "maxChars": 1});
+        let mut u_first_cursor: Option<String> = None;
+        let mut u_recovered_lines: std::collections::BTreeMap<u64, String> =
+            std::collections::BTreeMap::new();
+        loop {
+            let res = call_ok(&fs, "read_document", &u_doc_args);
+            if u_first_cursor.is_none() {
+                u_first_cursor = res
+                    .get("nextCursor")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+            }
+            let t = res["text"].as_str().unwrap();
+            let body = &t[t.find('\n').unwrap() + 1..];
+            let units = res["units"].as_array().unwrap();
+            let mut char_offset = 0;
+            for u in units {
+                let line_num = u["line"].as_u64().unwrap();
+                let chars_count = u["chars"].as_u64().unwrap() as usize;
+                let chunk_chars: String =
+                    body.chars().skip(char_offset).take(chars_count).collect();
+                char_offset += chars_count;
+                u_recovered_lines
+                    .entry(line_num)
+                    .or_default()
+                    .push_str(&chunk_chars);
+            }
+            if let Some(cursor) = res.get("nextCursor").and_then(|c| c.as_str()) {
+                u_doc_args["cursor"] = json!(cursor);
+            } else {
+                break;
+            }
+        }
+        let u_orig_lines: Vec<&str> = expected_text.split('\n').collect();
+        assert_eq!(u_recovered_lines.len(), u_orig_lines.len());
+        for (idx, orig_line) in u_orig_lines.iter().enumerate() {
+            let line_num = (idx + 1) as u64;
+            assert_eq!(
+                u_recovered_lines
+                    .get(&line_num)
+                    .map(|s| s.as_str())
+                    .unwrap_or(""),
+                *orig_line
+            );
+        }
+        let u_reconstructed = (1..=u_orig_lines.len())
+            .map(|i| {
+                u_recovered_lines
+                    .get(&(i as u64))
+                    .map(|s| s.as_str())
+                    .unwrap_or("")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(u_reconstructed, expected_text);
+
+        let stale_file = tmp.path().join("stale_test.txt");
+        std::fs::write(&stale_file, b"content before rewrite\n").unwrap();
+        let s_res = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "stale_test.txt", "maxChars": 1}),
+        );
+        let s_cursor = s_res["nextCursor"].as_str().unwrap().to_string();
+        std::fs::write(&stale_file, b"different length content now\n").unwrap();
+        let stale_err = call_err(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "stale_test.txt", "cursor": s_cursor}),
+        );
+        assert_eq!(stale_err.code, "STALE_CURSOR");
+
+        let fetch1 = call_ok(&fs, "fetch", &json!({"id": "work:utf8.txt"}));
+        let f1_text = fetch1["text"].as_str().unwrap();
+        assert_eq!(&f1_text[f1_text.find('\n').unwrap() + 1..], expected_text);
+
+        let s1 = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "utf8.txt", "query": "Замещающие"}),
+        );
+        let res1 = s1["results"].as_array().unwrap();
+        assert_eq!(res1.len(), 1);
+        assert_eq!(res1[0]["locator"]["line"], 2);
+        assert_eq!(res1[0]["snippet"], "Замещающие сделки: взыскание убытков.");
+
+        let bom_expected = format!("\u{feff}{expected_text}");
+        let b1 = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b1["text"], bom_expected);
+        assert_eq!(b1["totalLines"], 4);
+        assert_eq!(b1["endLine"], 4);
+
+        let b2 = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b2["text"], bom_expected);
+        assert_eq!(b2["totalLines"], 4);
+        assert_eq!(b2["endLine"], 4);
+
+        let b_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8-bom.txt"}),
+        );
+        assert_eq!(b_doc["lines"], 4);
+        assert_eq!(b_doc["size"], 195);
+        let bd_text = b_doc["text"].as_str().unwrap();
+        let bd_body = &bd_text[bd_text.find('\n').unwrap() + 1..];
+        assert!(bd_body.starts_with('\u{feff}'));
+        assert_eq!(bd_body, bom_expected);
+
+        let b_fetch = call_ok(&fs, "fetch", &json!({"id": "work:utf8-bom.txt"}));
+        let bf_text = b_fetch["text"].as_str().unwrap();
+        let bf_body = &bf_text[bf_text.find('\n').unwrap() + 1..];
+        assert!(bf_body.starts_with('\u{feff}'));
+        assert_eq!(bf_body, bom_expected);
+
+        let b_search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "utf8-bom.txt", "query": "Замещающие"}),
+        );
+        let b_res = b_search["results"].as_array().unwrap();
+        assert_eq!(b_res.len(), 1);
+        assert_eq!(b_res[0]["locator"]["line"], 2);
+        assert_eq!(b_res[0]["snippet"], "Замещающие сделки: взыскание убытков.");
+
+        let also1 = call_ok(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        assert_eq!(also1["text"], "»");
+
+        let also2 = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        assert_eq!(also2["text"], "»");
+
+        let also_doc = call_ok(
+            &fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt"}),
+        );
+        let ad_text = also_doc["text"].as_str().unwrap();
+        assert_eq!(&ad_text[ad_text.find('\n').unwrap() + 1..], "»");
+
+        let also_fetch = call_ok(&fs, "fetch", &json!({"id": "work:utf8-also-cp1251.txt"}));
+        let af_text = also_fetch["text"].as_str().unwrap();
+        assert_eq!(&af_text[af_text.find('\n').unwrap() + 1..], "»");
+
+        let also_err = call_err(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "utf8-also-cp1251.txt", "query": "»"}),
+        );
+        assert_eq!(also_err.code, "INVALID_ARGUMENT");
+
+        let amb_tmp = tempfile::tempdir().unwrap();
+        write_ambiguous_fixtures(amb_tmp.path());
+        let amb_fs = new_fs(&amb_tmp);
+
+        let nul1 = call_ok(
+            &amb_fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "utf8-nul.txt"}),
+        );
+        assert_eq!(nul1["text"], "A\u{0}B");
+
+        let nul2 = call_ok(
+            &amb_fs,
+            "read_file",
+            &json!({"root": "work", "path": "utf8-nul.txt"}),
+        );
+        assert_eq!(nul2["text"], "A\u{0}B");
+
+        let nul_doc = call_ok(
+            &amb_fs,
+            "read_document",
+            &json!({"root": "work", "path": "utf8-nul.txt"}),
+        );
+        let nd_text = nul_doc["text"].as_str().unwrap();
+        assert_eq!(&nd_text[nd_text.find('\n').unwrap() + 1..], "A\u{0}B");
+
+        let nul_fetch = call_ok(&amb_fs, "fetch", &json!({"id": "work:utf8-nul.txt"}));
+        let nf_text = nul_fetch["text"].as_str().unwrap();
+        assert_eq!(&nf_text[nf_text.find('\n').unwrap() + 1..], "A\u{0}B");
+
+        let nul_search = call_ok(
+            &amb_fs,
+            "search_text",
+            &json!({"root": "work", "path": "utf8-nul.txt", "query": "A\u{0}B"}),
+        );
+        let n_res = nul_search["results"].as_array().unwrap();
+        assert_eq!(n_res.len(), 1);
+        assert_eq!(n_res[0]["locator"]["line"], 1);
+    }
+
+    #[test]
+    fn cp1251_lock_rejects_binary_and_controls() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_main_fixtures(tmp.path());
+        let fs = new_fs(&tmp);
+
+        for tool in [
+            "read_text_file",
+            "read_file",
+            "read_document",
+            "inspect_document",
+        ] {
+            let err = call_err(
+                &fs,
+                tool,
+                &json!({"root": "work", "path": "bom-cp1251.txt"}),
+            );
+            assert_eq!(err.code, "NOT_TEXT", "{tool}");
+        }
+        let b_fetch = call_err(&fs, "fetch", &json!({"id": "work:bom-cp1251.txt"}));
+        assert_eq!(b_fetch.code, "NOT_TEXT");
+        let b_search = call_err(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "bom-cp1251.txt", "query": "Замещающие"}),
+        );
+        assert_eq!(b_search.code, "NOT_TEXT");
+
+        for tool in [
+            "read_text_file",
+            "read_file",
+            "read_document",
+            "inspect_document",
+        ] {
+            let err = call_err(&fs, tool, &json!({"root": "work", "path": "binary.txt"}));
+            assert_eq!(err.code, "NOT_TEXT", "{tool} binary.txt");
+        }
+        let bin_fetch = call_err(&fs, "fetch", &json!({"id": "work:binary.txt"}));
+        assert_eq!(bin_fetch.code, "NOT_TEXT");
+        let bin_search = call_err(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "path": "binary.txt", "query": "Замещающие"}),
+        );
+        assert_eq!(bin_search.code, "NOT_TEXT");
+
+        let ctrl_tmp = tempfile::tempdir().unwrap();
+        write_controls_fixtures(ctrl_tmp.path());
+        let ctrl_fs = new_fs(&ctrl_tmp);
+
+        for name in ["nul-control.txt", "x98.txt", "sub.txt", "utf16.txt"] {
+            for tool in [
+                "read_text_file",
+                "read_file",
+                "read_document",
+                "inspect_document",
+            ] {
+                let err = call_err(&ctrl_fs, tool, &json!({"root": "work", "path": name}));
+                assert_eq!(err.code, "NOT_TEXT", "{tool} {name}");
+            }
+            let err = call_err(&ctrl_fs, "fetch", &json!({"id": format!("work:{name}")}));
+            assert_eq!(err.code, "NOT_TEXT", "fetch {name}");
+            let s_err = call_err(
+                &ctrl_fs,
+                "search_text",
+                &json!({"root": "work", "path": name, "query": "Замещающие"}),
+            );
+            assert_eq!(s_err.code, "NOT_TEXT", "search_text {name}");
+        }
+
+        let bin_res = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "binary.bin"}),
+        );
+        assert_eq!(bin_res["kind"], "binary");
+        let expected_blob =
+            base64::engine::general_purpose::STANDARD.encode((0..=255u8).collect::<Vec<u8>>());
+        assert_eq!(bin_res["blob"], expected_blob);
+
+        let dat_read = call_err(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251.dat"}),
+        );
+        assert_eq!(dat_read.code, "NOT_TEXT");
+        assert_eq!(
+            dat_read.message,
+            "File is not valid UTF-8. Use read_document for document formats."
+        );
+
+        let dat_file = call_ok(
+            &fs,
+            "read_file",
+            &json!({"root": "work", "path": "cp1251.dat"}),
+        );
+        assert_eq!(dat_file["kind"], "binary");
+        let cp_bytes = cp1251_encode(TEXT);
+        let cp_blob = base64::engine::general_purpose::STANDARD.encode(&cp_bytes);
+        assert_eq!(dat_file["blob"], cp_blob);
+
+        let search = call_ok(
+            &fs,
+            "search_text",
+            &json!({"root": "work", "query": "Замещающие"}),
+        );
+        let results = search["results"].as_array().unwrap();
+        assert!(!results.iter().any(|r| r["relativePath"] == "cp1251.dat"));
+
+        let mc_err = call_err(
+            &fs,
+            "read_text_file",
+            &json!({"root": "work", "path": "cp1251.txt", "maxChars": 200_001}),
+        );
+        assert_eq!(mc_err.code, "INVALID_ARGUMENT");
     }
 }

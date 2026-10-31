@@ -534,6 +534,7 @@ struct PlainText {
     lines: usize,
     next: usize,
     size: u64,
+    encoding: crate::text::TextEncoding,
 }
 impl PlainText {
     fn open(opened: Opened) -> Result<Self> {
@@ -541,36 +542,14 @@ impl PlainText {
             return Err(error("FILE_TOO_LARGE", "Text exceeds 64 MiB"));
         }
         let mut reader = BufReader::new(opened.source);
-        let mut buf = Vec::new();
-        let mut lines = 1;
-        let mut bytes = 0u64;
-        let mut bounded = (&mut reader).take(opened.size + 1);
-        loop {
-            buf.clear();
-            let n = bounded.read_until(b'\n', &mut buf).map_err(io_error)?;
-            bytes += n as u64;
-            if bytes > opened.size {
-                return Err(error("FILE_TOO_LARGE", "File grew beyond the read limit"));
-            }
-            std::str::from_utf8(&buf).map_err(|_| {
-                error(
-                    "NOT_TEXT",
-                    "File is not valid UTF-8. Use read_document for document formats.",
-                )
-            })?;
-            if n == 0 {
-                break;
-            }
-            if buf.ends_with(b"\n") {
-                lines += 1;
-            }
-        }
+        let (encoding, lines) = crate::text::scan(&mut reader, opened.size, true)?;
         reader.rewind().map_err(io_error)?;
         Ok(Self {
             reader,
             lines,
             next: 0,
             size: opened.size,
+            encoding,
         })
     }
 }
@@ -598,11 +577,8 @@ impl TextDocument for PlainText {
         if line.ends_with(b"\n") {
             line.pop();
         }
-        let mut text =
-            String::from_utf8(line).map_err(|_| error("NOT_TEXT", "File is not valid UTF-8"))?;
-        if text.ends_with('\r') {
-            text.pop();
-        }
+        let text = crate::text::decode(self.encoding, &line)?;
+        let text = text.strip_suffix('\r').unwrap_or(&text).to_string();
         Ok(Unit {
             locator: json!({"line":index+1}),
             heading: None,
@@ -610,7 +586,7 @@ impl TextDocument for PlainText {
         })
     }
     fn summary(&self) -> Value {
-        json!({"size":self.size,"lines":self.lines})
+        json!({"size":self.size,"lines":self.lines,"encoding":self.encoding.label()})
     }
 }
 pub(crate) fn open_text_document(opened: Opened, args: &Value) -> Result<Box<dyn TextDocument>> {
@@ -1050,6 +1026,9 @@ pub(crate) fn fetch(root: &RootDir, root_id: &str, raw_path: &str, id: &str) -> 
     if let Some(cursor) = doc.get("nextCursor") {
         metadata["nextCursor"] = cursor.clone();
     }
+    if let Some(encoding) = doc.get("encoding") {
+        metadata["encoding"] = encoding.clone();
+    }
     Ok(
         json!({"id":id,"title":Path::new(raw_path).file_name().unwrap_or_default().to_string_lossy(),"text":doc["text"],"url":doc["uri"],"metadata":metadata}),
     )
@@ -1400,7 +1379,7 @@ mod tests {
     fn validates_utf8_beyond_the_requested_output_and_guards_panics() {
         let tmp = tempfile::tempdir().unwrap();
         let root = root(&tmp);
-        std::fs::write(tmp.path().join("bad.txt"), b"valid\n\xff").unwrap();
+        std::fs::write(tmp.path().join("bad.txt"), b"valid\n\xff\x00").unwrap();
         assert_eq!(
             read_document(&root, "work", &json!({"path":"bad.txt","maxChars":1}))
                 .unwrap_err()

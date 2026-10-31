@@ -5,7 +5,7 @@ Nothing is installed into the user's profile: every path lives under a new
 attempt directory, the app always gets an explicit --config, no tray or
 scheduled task is started, and no real account or key is used.
 """
-import argparse, datetime, hashlib, json, os, pathlib, platform, secrets, shutil, subprocess, sys, zipfile
+import argparse, datetime, hashlib, json, os, pathlib, platform, re, secrets, shutil, subprocess, sys, zipfile
 
 project = pathlib.Path(__file__).resolve().parent.parent
 checks = []
@@ -105,8 +105,20 @@ def main():
     record('installed-matches-payload', {e['path']: e for e in installed} == payload)
     exe = target / 'local-files.exe'
 
+    cargo_text = (project / 'Cargo.toml').read_text(encoding='utf-8')
+    m = re.search(r'^version\s*=\s*"([^"]+)"', cargo_text, re.M)
+    if not m:
+        raise SystemExit('Malformed or missing version in Cargo.toml')
+    expected_version = m[1]
+    expected_app_version = f'Strigov Local MCP {expected_version}'
+    manifest_file = extracted / 'payload' / 'install-manifest.json'
+    manifest_version = json.loads(manifest_file.read_text(encoding='utf-8')).get('version') if manifest_file.is_file() else None
+    readme = extracted / 'Read Me.txt'
+    readme_first_line = readme.read_text(encoding='utf-8').splitlines()[0].strip() if readme.is_file() else ''
+
     code, out, ok, log = run('app-version', [exe, '--version'])
-    record('app-version', ok and out.strip() == 'Strigov Local MCP 2.2.0', code, [log])
+    record('app-version', ok and out.strip() == expected_app_version and manifest_version == expected_version and readme_first_line == expected_app_version,
+           code, [log], detail=f'exe={out.strip()!r}, manifest={manifest_version!r}, readme={readme_first_line!r}, expected={expected_version!r}')
     settings = work / 'Настройки пользователя'
     config = settings / 'folders.json'
     code, _, ok, log = run('app-init', [exe, 'init', '--config', config])

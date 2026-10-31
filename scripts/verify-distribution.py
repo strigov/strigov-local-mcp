@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Verify a mounted installer and a clean user installation without touching live services."""
-import hashlib, json, os, pathlib, plistlib, subprocess, sys, tempfile
+import hashlib, json, os, pathlib, plistlib, re, subprocess, sys, tempfile
 
 image=pathlib.Path(sys.argv[1]).resolve()
 project=pathlib.Path(__file__).resolve().parent.parent
@@ -18,7 +18,13 @@ with tempfile.TemporaryDirectory(prefix='local-files-distribution-') as temp:
         exe=destination/'Contents/MacOS/local-files'
         info=plistlib.loads((destination/'Contents/Info.plist').read_bytes())
         assert info['CFBundleName']==info['CFBundleDisplayName']=='Strigov Local MCP'
-        assert run(exe,'--version',env=env).stdout.startswith('Strigov Local MCP ')
+        m=re.search(r'^version\s*=\s*"([^"]+)"',(project/'Cargo.toml').read_text(),re.M)
+        if not m: raise SystemExit('Malformed or missing version in Cargo.toml')
+        expected_version=m[1]
+        assert info.get('CFBundleShortVersionString')==info.get('CFBundleVersion')==expected_version
+        assert run(exe,'--version',env=env).stdout.strip()==f'Strigov Local MCP {expected_version}'
+        readme=mount/'Read Me.txt' if (mount/'Read Me.txt').exists() else destination/'Contents/Resources/Read Me.txt'
+        assert readme.read_text(encoding='utf-8').splitlines()[0].strip()==f'Strigov Local MCP {expected_version}'
         run(exe,'init',env=env)
         config=settings/'folders.json'
         data=json.loads(config.read_text())

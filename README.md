@@ -11,7 +11,7 @@
 
 <img src="docs/assets/readme-cover.png" alt="Выбранные папки на ноутбуке соединены с чатом: вопрос превращается в ответ с источниками из документов" width="100%">
 
-**[Скачать для macOS](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-macos-arm64.dmg)** · **[Скачать для Windows](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-windows-x64.zip)**
+**[Скачать для macOS](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-macos-arm64.dmg)** · **[Скачать для Windows](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-windows-x64.zip)**
 
 macOS Apple Silicon · Windows x64 · [MIT](LICENSE)
 
@@ -38,7 +38,7 @@ Strigov Local MCP подключает к чату выбранные папки
 | 📦 **Заглядывать в архивы** | Просматривать ZIP и читать файлы внутри без ручной распаковки. |
 | 👁️ **Сохранять оригиналы** | Приложение умеет читать и искать; изменять и удалять ваши файлы через него нельзя. |
 
-Всё это доступно в [версии 2.2.0](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0) — текущем предварительном выпуске от 29 октября 2026 года.
+Всё это доступно в [версии 2.2.1](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.1) — текущем предварительном выпуске.
 
 ### Какие файлы поддерживаются
 
@@ -50,7 +50,7 @@ Strigov Local MCP подключает к чату выбранные папки
 | **Письма: EML, MSG** | Отправитель, тема, текст и доступные вложения. |
 | **ZIP** | Список файлов и чтение поддерживаемых документов внутри, в том числе во вложенных архивах. |
 | **PNG, JPEG, GIF, WebP, TIFF, BMP** | Изображение или выбранный фрагмент; у TIFF можно выбрать страницу. |
-| **Текст, Markdown, CSV, исходный код** | Текст в кодировке UTF-8. |
+| **Текст, Markdown, CSV, исходный код** | Текст в кодировке UTF-8 или Windows-1251. |
 
 Поиск по содержимому работает с текстом документов. Встроенного распознавания сканов (OCR) нет: страницу можно показать ChatGPT, но поиск по папке не найдёт слова на изображении без текстового слоя. Внутри ZIP и вложений нужно искать отдельно, указав конкретный файл.
 
@@ -80,7 +80,7 @@ Strigov Local MCP подключает к чату выбранные папки
 ### macOS
 
 1. Откройте меню ** → Об этом Mac**. В поле «Чип» должен быть указан Apple M1, M2 или более новый чип Apple.
-2. [Скачайте установщик для Mac](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-macos-arm64.dmg). Файл называется `Strigov-Local-MCP-2.2.0-macos-arm64.dmg`; обычно он попадает в «Загрузки».
+2. [Скачайте установщик для Mac](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-macos-arm64.dmg). Файл называется `Strigov-Local-MCP-2.2.1-macos-arm64.dmg`; обычно он попадает в «Загрузки».
 3. Дважды нажмите на скачанный файл. В открывшемся окне запустите **Install Strigov Local MCP.app**.
 4. Нажмите **«Установить»**. Приложение появится в папке `Applications` внутри вашей домашней папки и запустится автоматически.
 5. Найдите **значок серверной стойки в верхней строке меню**. Отдельного большого окна у приложения нет. Теперь переходите к [подключению ChatGPT](#подключение-к-chatgpt).
@@ -108,7 +108,7 @@ Strigov Local MCP подключает к чату выбранные папки
 
 ### Windows
 
-1. [Скачайте архив для Windows](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.0/Strigov-Local-MCP-2.2.0-windows-x64.zip). Файл называется `Strigov-Local-MCP-2.2.0-windows-x64.zip`.
+1. [Скачайте архив для Windows](https://github.com/strigov/strigov-local-mcp/releases/download/v2.2.1/Strigov-Local-MCP-2.2.1-windows-x64.zip). Файл называется `Strigov-Local-MCP-2.2.1-windows-x64.zip`.
 2. Откройте «Загрузки», нажмите на архив правой кнопкой и выберите **«Извлечь все…» → «Извлечь»**.
 3. В распакованной папке запустите **`local-files-installer.exe`**. Рядом должна оставаться папка `payload`: не переносите установщик отдельно и не запускайте его прямо из ZIP.
 4. Нажмите **«Установить»**. Права администратора не нужны.
@@ -237,7 +237,7 @@ Strigov Local MCP подключает к чату выбранные папки
 
 ## Для разработчиков
 
-[Техническая справка](docs/technical-reference.md) содержит список MCP-инструментов, ограничения форматов, устройство защиты и команды сборки. Проверки опубликованных установщиков приложены к [релизу 2.2.0](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.0).
+[Техническая справка](docs/technical-reference.md) содержит список MCP-инструментов, ограничения форматов, устройство защиты и команды сборки. Проверки опубликованных установщиков приложены к [релизу 2.2.1](https://github.com/strigov/strigov-local-mcp/releases/tag/v2.2.1).
 
 ## Лицензия
 
