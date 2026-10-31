@@ -1676,6 +1676,14 @@ mod tests {
         bytes
     }
     fn document_tools(doc: Document) -> (Value, Value) {
+        let (_tmp, root) = document_fixture(doc);
+        let args = json!({"path":"fixture.pdf"});
+        (
+            collect_read_document(&root, &args),
+            collect_inspect_document(&root, &args),
+        )
+    }
+    fn document_fixture(doc: Document) -> (tempfile::TempDir, crate::filesystem::RootDir) {
         let tmp = tempfile::tempdir().unwrap();
         let root = crate::filesystem::RootDir::open(&crate::config::Root {
             id: "work".into(),
@@ -1684,10 +1692,221 @@ mod tests {
         })
         .unwrap();
         std::fs::write(tmp.path().join("fixture.pdf"), bytes(doc)).unwrap();
+        (tmp, root)
+    }
+    fn next_request(args: &mut Value, response: &Value, seen: &mut HashSet<String>) -> bool {
+        let Some(cursor) = response.get("nextCursor") else {
+            return false;
+        };
+        let token = cursor.as_str().unwrap();
+        assert!(seen.insert(token.to_owned()), "repeated cursor: {response}");
+        assert!(seen.len() < 10_000, "cursor chain did not terminate");
+        args["cursor"] = cursor.clone();
+        true
+    }
+    fn collect_read_document(root: &crate::filesystem::RootDir, args: &Value) -> Value {
+        let mut args = args.clone();
+        let mut seen = HashSet::new();
+        let mut result = crate::documents::read_document(root, "work", &args).unwrap();
+        let mut chunk = result.clone();
+        let mut units: Vec<Value> = Vec::new();
+        let mut body = String::new();
+        loop {
+            let (_, mut remainder) = chunk["text"].as_str().unwrap().split_once('\n').unwrap();
+            let fragments = chunk["units"].as_array().unwrap();
+            assert!(!fragments.is_empty() || chunk["totalUnits"] == 0);
+            for (index, fragment) in fragments.iter().enumerate() {
+                if index > 0 {
+                    remainder = remainder.strip_prefix("\n\n").unwrap();
+                }
+                let page = fragment["page"].as_u64().unwrap() as usize;
+                let chars = fragment["chars"].as_u64().unwrap() as usize;
+                if page == units.len() && !units.is_empty() {
+                    // A continuation can start inside the preceding page. Its
+                    // heading is absent and chars counts only this fragment.
+                    assert_eq!(index, 0, "duplicate page within a response");
+                    assert!(chars > 0, "same-page continuation made no progress");
+                    let previous = units.last_mut().unwrap();
+                    let mut metadata = fragment.clone();
+                    metadata["chars"] = previous["chars"].clone();
+                    assert_eq!(&metadata, previous, "page metadata changed");
+                    previous["chars"] = json!(previous["chars"].as_u64().unwrap() + chars as u64);
+                } else {
+                    assert_eq!(page, units.len() + 1, "omitted or duplicate page");
+                    if !units.is_empty() {
+                        body.push_str("\n\n");
+                    }
+                    let (heading, rest) = remainder.split_once('\n').unwrap();
+                    assert!(heading.starts_with(&format!("--- page {page} · ")));
+                    body.push_str(heading);
+                    body.push('\n');
+                    remainder = rest;
+                    units.push(fragment.clone());
+                }
+                let end = remainder
+                    .char_indices()
+                    .nth(chars)
+                    .map_or(remainder.len(), |(offset, _)| offset);
+                let (text, rest) = remainder.split_at(end);
+                assert_eq!(text.chars().count(), chars, "missing fragment text");
+                body.push_str(text);
+                remainder = rest;
+            }
+            assert!(remainder.is_empty(), "unconsumed response text");
+            assert_eq!(chunk["truncated"], chunk.get("nextCursor").is_some());
+            if !next_request(&mut args, &chunk, &mut seen) {
+                break;
+            }
+            chunk = crate::documents::read_document(root, "work", &args).unwrap();
+            assert_eq!(chunk["totalUnits"], result["totalUnits"]);
+        }
+        assert_eq!(units.len() as u64, result["totalUnits"].as_u64().unwrap());
+        let source = result["text"]
+            .as_str()
+            .unwrap()
+            .split_once(" — pages ")
+            .unwrap()
+            .0;
+        result["text"] = json!(format!(
+            "{source} — pages 1–{} of {}]\n{body}",
+            units.len(),
+            result["totalUnits"]
+        ));
+        result["units"] = json!(units);
+        result["truncated"] = json!(false);
+        result.as_object_mut().unwrap().remove("nextCursor");
+        result
+    }
+    fn range_pages(value: &Value) -> Vec<u32> {
+        let mut pages = Vec::new();
+        for range in value.as_str().unwrap().split(',').filter(|s| !s.is_empty()) {
+            let (start, end) = range.split_once('-').unwrap_or((range, range));
+            let start = start.parse::<u32>().unwrap();
+            let end = end.parse::<u32>().unwrap();
+            assert!(start > 0 && start <= end);
+            pages.extend(start..=end);
+        }
+        assert!(pages.windows(2).all(|pair| pair[0] < pair[1]));
+        pages
+    }
+    fn collect_inspect_document(root: &crate::filesystem::RootDir, args: &Value) -> Value {
+        let mut args = args.clone();
+        let mut seen = HashSet::new();
+        let mut result = crate::documents::inspect_document(root, "work", &args).unwrap();
+        let mut chunk = result.clone();
+        let mut classified = 0;
+        let mut ranges: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        loop {
+            assert_eq!(chunk["fromPage"], classified + 1);
+            let count = chunk["classified"].as_u64().unwrap();
+            assert!(count > 0 || chunk["pageCount"] == 0);
+            let mut covered = Vec::new();
+            for field in ["pages", "suspicious"] {
+                for (kind, value) in chunk[field].as_object().unwrap() {
+                    let pages = range_pages(value);
+                    assert!(pages.iter().all(|&page| {
+                        u64::from(page) > classified && u64::from(page) <= classified + count
+                    }));
+                    if field == "pages" {
+                        covered.extend_from_slice(&pages);
+                    }
+                    ranges
+                        .entry(format!("{field}/{kind}"))
+                        .or_default()
+                        .extend(pages);
+                }
+            }
+            covered.sort_unstable();
+            assert_eq!(
+                covered,
+                ((classified + 1) as u32..=(classified + count) as u32).collect::<Vec<_>>()
+            );
+            let limited = range_pages(&chunk["contentTooLarge"]);
+            assert!(limited.iter().all(|page| covered.contains(page)));
+            ranges
+                .entry("contentTooLarge".into())
+                .or_default()
+                .extend(limited);
+            classified += count;
+            assert!(classified <= result["pageCount"].as_u64().unwrap());
+            assert_eq!(chunk["complete"], chunk.get("nextCursor").is_none());
+            if !next_request(&mut args, &chunk, &mut seen) {
+                break;
+            }
+            chunk = crate::documents::inspect_document(root, "work", &args).unwrap();
+            assert_eq!(chunk["pageCount"], result["pageCount"]);
+        }
+        assert_eq!(classified, result["pageCount"].as_u64().unwrap());
+        for (key, pages) in ranges {
+            assert!(pages.windows(2).all(|pair| pair[0] < pair[1]));
+            if let Some((field, kind)) = key.split_once('/') {
+                result[field][kind] = json!(page_ranges(pages));
+            } else {
+                result[key] = json!(page_ranges(pages));
+            }
+        }
+        result["classified"] = json!(classified);
+        result["complete"] = json!(true);
+        result.as_object_mut().unwrap().remove("nextCursor");
+        result
+    }
+    #[test]
+    fn document_tools_read_cursor_chain_preserves_exact_text_and_page_metadata() {
+        let (doc, _) = fixture();
+        let (_tmp, root) = document_fixture(doc);
+        // The oracle is the real, unpaginated API response, not the collector.
+        let expected =
+            crate::documents::read_document(&root, "work", &json!({"path":"fixture.pdf"})).unwrap();
+        assert_eq!(expected["truncated"], false);
+        assert_eq!(expected["units"].as_array().unwrap().len(), 7);
+        assert!(
+            expected["text"]
+                .as_str()
+                .unwrap()
+                .contains("ПриПриПриПриПриПри")
+        );
+        for max_chars in [1, 140, 240] {
+            // An allowed caller budget forces genuine API cursors, including
+            // fragments within page 1 and multibyte Cyrillic text on page 5.
+            let args = json!({"path":"fixture.pdf", "maxChars":max_chars});
+            let first = crate::documents::read_document(&root, "work", &args).unwrap();
+            assert_eq!(first["truncated"], true);
+            assert!(first["nextCursor"].is_string());
+            assert_eq!(first["units"][0]["page"], 1);
+            if max_chars == 1 {
+                assert_eq!(first["units"][0]["chars"], 1);
+            }
+            let recovered = collect_read_document(&root, &args);
+            assert_eq!(recovered, expected, "maxChars={max_chars}");
+        }
+    }
+    #[test]
+    fn document_tools_inspection_cursor_chain_preserves_exact_classification() {
+        let (doc, _) = fixture();
+        let (_tmp, root) = document_fixture(doc);
         let args = json!({"path":"fixture.pdf"});
-        let read = crate::documents::read_document(&root, "work", &args).unwrap();
-        let inspect = crate::documents::inspect_document(&root, "work", &args).unwrap();
-        (read, inspect)
+        let expected = crate::documents::inspect_document(&root, "work", &args).unwrap();
+        assert_eq!(
+            expected["pages"],
+            json!({"text":"1,5-7", "ocr_text":"2", "no_text":"3-4", "empty":""})
+        );
+        assert_eq!(
+            expected["suspicious"],
+            json!({"no_cyrillic_over_scan":"1-2,7"})
+        );
+        // Existing test-only control deterministically stops after the first
+        // page: the public APIs retain their authoritative progress floor.
+        let previous = crate::documents::TEST_DEADLINE
+            .with(|value| value.replace(Some(Instant::now() - std::time::Duration::from_secs(1))));
+        let first = crate::documents::inspect_document(&root, "work", &args).unwrap();
+        let recovered = collect_inspect_document(&root, &args);
+        crate::documents::TEST_DEADLINE.with(|value| value.set(previous));
+        assert_eq!(first["classified"], 1);
+        assert_eq!(first["complete"], false);
+        assert!(first["nextCursor"].is_string());
+        assert_eq!(recovered, expected);
+        assert_eq!(recovered["classified"], 7);
+        assert_eq!(recovered["complete"], true);
     }
     fn inherited_resources(doc: &Document) -> ObjectId {
         let page = doc.get_pages()[&1];
